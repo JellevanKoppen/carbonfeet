@@ -1,6 +1,9 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
@@ -48,9 +51,20 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
   final Map<String, UserData> _users = <String, UserData>{};
 
   String? _activeEmail;
+  bool _isHydrating = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreState();
+  }
 
   @override
   Widget build(BuildContext context) {
+    if (_isHydrating) {
+      return const _LoadingStateScreen();
+    }
+
     final email = _activeEmail;
     if (email == null) {
       return AuthScreen(onSubmit: _handleAuth);
@@ -58,7 +72,15 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
 
     final activeUser = _users[email];
     if (activeUser == null) {
-      _activeEmail = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _activeEmail = null;
+        });
+        _persistState();
+      });
       return AuthScreen(onSubmit: _handleAuth);
     }
 
@@ -66,9 +88,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return OnboardingScreen(
         draftUser: activeUser,
         onComplete: (completedUser) {
-          setState(() {
-            _users[email] = completedUser;
-          });
+          _updateActiveUser(completedUser);
         },
       );
     }
@@ -84,8 +104,27 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
         setState(() {
           _activeEmail = null;
         });
+        _persistState();
       },
     );
+  }
+
+  Future<void> _restoreState() async {
+    final restored = await AppStateStore.load();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _credentials
+        ..clear()
+        ..addAll(restored.credentials);
+      _users
+        ..clear()
+        ..addAll(restored.users);
+      _activeEmail = restored.activeEmail;
+      _isHydrating = false;
+    });
   }
 
   String? _handleAuth(String email, String password, AuthMode mode) {
@@ -108,6 +147,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
         _users[normalizedEmail] = draft;
         _activeEmail = normalizedEmail;
       });
+      _persistState();
       return null;
     }
 
@@ -119,6 +159,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
     setState(() {
       _activeEmail = normalizedEmail;
     });
+    _persistState();
 
     return null;
   }
@@ -286,6 +327,19 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
     setState(() {
       _users[email] = next;
     });
+    _persistState();
+  }
+
+  void _persistState() {
+    unawaited(
+      AppStateStore.save(
+        PersistedAppState(
+          credentials: Map<String, String>.from(_credentials),
+          users: Map<String, UserData>.from(_users),
+          activeEmail: _activeEmail,
+        ),
+      ),
+    );
   }
 
   Future<void> _openSimulator(UserData user) async {
@@ -364,6 +418,26 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
           ),
         );
       },
+    );
+  }
+}
+
+class _LoadingStateScreen extends StatelessWidget {
+  const _LoadingStateScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 12),
+            Text('Loading your footprint data...'),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -2119,6 +2193,89 @@ class SimulationOutcome {
   final double projectedKg;
 }
 
+class PersistedAppState {
+  const PersistedAppState({
+    required this.credentials,
+    required this.users,
+    required this.activeEmail,
+  });
+
+  const PersistedAppState.empty()
+    : credentials = const {},
+      users = const {},
+      activeEmail = null;
+
+  final Map<String, String> credentials;
+  final Map<String, UserData> users;
+  final String? activeEmail;
+
+  factory PersistedAppState.fromJson(Map<String, dynamic> json) {
+    final credentials = <String, String>{};
+    for (final entry in _asStringDynamicMap(json['credentials']).entries) {
+      if (entry.value is String) {
+        credentials[entry.key] = entry.value as String;
+      }
+    }
+
+    final users = <String, UserData>{};
+    for (final entry in _asStringDynamicMap(json['users']).entries) {
+      final rawUser = _asStringDynamicMap(entry.value);
+      if (rawUser.isEmpty) {
+        continue;
+      }
+      final parsed = UserData.fromJson(rawUser);
+      users[entry.key] = parsed.email.isEmpty
+          ? parsed.copyWith(email: entry.key)
+          : parsed;
+    }
+
+    final activeEmailRaw = json['activeEmail'];
+    return PersistedAppState(
+      credentials: credentials,
+      users: users,
+      activeEmail: activeEmailRaw is String && activeEmailRaw.isNotEmpty
+          ? activeEmailRaw
+          : null,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'credentials': credentials,
+      'users': {
+        for (final entry in users.entries) entry.key: entry.value.toJson(),
+      },
+      'activeEmail': activeEmail,
+    };
+  }
+}
+
+class AppStateStore {
+  static const String _storageKey = 'carbonfeet_state_v1';
+
+  static Future<PersistedAppState> load() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_storageKey);
+      if (raw == null || raw.isEmpty) {
+        return const PersistedAppState.empty();
+      }
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        return const PersistedAppState.empty();
+      }
+      return PersistedAppState.fromJson(_asStringDynamicMap(decoded));
+    } catch (_) {
+      return const PersistedAppState.empty();
+    }
+  }
+
+  static Future<void> save(PersistedAppState state) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_storageKey, jsonEncode(state.toJson()));
+  }
+}
+
 class UserData {
   const UserData({
     required this.email,
@@ -2159,6 +2316,36 @@ class UserData {
     );
   }
 
+  factory UserData.fromJson(Map<String, dynamic> json) {
+    final flights = (json['flights'] as List<dynamic>? ?? <dynamic>[])
+        .map((item) => FlightEntry.fromJson(_asStringDynamicMap(item)))
+        .toList();
+    final activityLog = (json['activityLog'] as List<dynamic>? ?? <dynamic>[])
+        .map((item) => ActivityEvent.fromJson(_asStringDynamicMap(item)))
+        .toList();
+
+    return UserData(
+      email: _readString(json['email'], fallback: ''),
+      country: _readString(json['country'], fallback: 'United States'),
+      lifeStage: _enumFromName(
+        LifeStage.values,
+        json['lifeStage'],
+        LifeStage.youngProfessional,
+      ),
+      dietProfile: DietProfile.fromJson(
+        _asStringDynamicMap(json['dietProfile']),
+      ),
+      carProfile: CarProfile.fromJson(_asStringDynamicMap(json['carProfile'])),
+      energyProfile: EnergyProfile.fromJson(
+        _asStringDynamicMap(json['energyProfile']),
+      ),
+      flights: flights,
+      activityLog: activityLog,
+      onboardingComplete: _readBool(json['onboardingComplete']),
+      initialProjectionKg: _readDouble(json['initialProjectionKg']),
+    );
+  }
+
   final String email;
   final String country;
   final LifeStage lifeStage;
@@ -2195,10 +2382,36 @@ class UserData {
       initialProjectionKg: initialProjectionKg ?? this.initialProjectionKg,
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'email': email,
+      'country': country,
+      'lifeStage': lifeStage.name,
+      'dietProfile': dietProfile.toJson(),
+      'carProfile': carProfile.toJson(),
+      'energyProfile': energyProfile.toJson(),
+      'flights': flights.map((entry) => entry.toJson()).toList(),
+      'activityLog': activityLog.map((entry) => entry.toJson()).toList(),
+      'onboardingComplete': onboardingComplete,
+      'initialProjectionKg': initialProjectionKg,
+    };
+  }
 }
 
 class DietProfile {
   const DietProfile({required this.meatDaysPerWeek, required this.dairyLevel});
+
+  factory DietProfile.fromJson(Map<String, dynamic> json) {
+    return DietProfile(
+      meatDaysPerWeek: _readInt(json['meatDaysPerWeek'], fallback: 4),
+      dairyLevel: _enumFromName(
+        DairyLevel.values,
+        json['dairyLevel'],
+        DairyLevel.medium,
+      ),
+    );
+  }
 
   final int meatDaysPerWeek;
   final DairyLevel dairyLevel;
@@ -2209,6 +2422,10 @@ class DietProfile {
       dairyLevel: dairyLevel ?? this.dairyLevel,
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {'meatDaysPerWeek': meatDaysPerWeek, 'dairyLevel': dairyLevel.name};
+  }
 }
 
 class CarProfile {
@@ -2217,6 +2434,21 @@ class CarProfile {
     required this.distanceMode,
     required this.distanceValue,
   });
+
+  factory CarProfile.fromJson(Map<String, dynamic> json) {
+    return CarProfile(
+      vehicleKey: _readString(
+        json['vehicleKey'],
+        fallback: vehicleCatalog.first.key,
+      ),
+      distanceMode: _enumFromName(
+        DistanceMode.values,
+        json['distanceMode'],
+        DistanceMode.perYear,
+      ),
+      distanceValue: _readDouble(json['distanceValue'], fallback: 12000),
+    );
+  }
 
   final String vehicleKey;
   final DistanceMode distanceMode;
@@ -2233,6 +2465,14 @@ class CarProfile {
       distanceValue: distanceValue ?? this.distanceValue,
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'vehicleKey': vehicleKey,
+      'distanceMode': distanceMode.name,
+      'distanceValue': distanceValue,
+    };
+  }
 }
 
 class EnergyProfile {
@@ -2242,9 +2482,25 @@ class EnergyProfile {
     required this.isEstimated,
   });
 
+  factory EnergyProfile.fromJson(Map<String, dynamic> json) {
+    return EnergyProfile(
+      electricityKwh: _readDouble(json['electricityKwh'], fallback: 4300),
+      gasM3: _readDouble(json['gasM3'], fallback: 650),
+      isEstimated: _readBool(json['isEstimated'], fallback: true),
+    );
+  }
+
   final double electricityKwh;
   final double gasM3;
   final bool isEstimated;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'electricityKwh': electricityKwh,
+      'gasM3': gasM3,
+      'isEstimated': isEstimated,
+    };
+  }
 }
 
 class FlightEntry {
@@ -2260,6 +2516,24 @@ class FlightEntry {
     required this.emissionsKg,
   });
 
+  factory FlightEntry.fromJson(Map<String, dynamic> json) {
+    return FlightEntry(
+      flightNumber: _readString(json['flightNumber']),
+      date: _readDateTime(json['date']),
+      occupancy: _enumFromName(
+        OccupancyLevel.values,
+        json['occupancy'],
+        OccupancyLevel.halfFull,
+      ),
+      origin: _readString(json['origin']),
+      destination: _readString(json['destination']),
+      distanceKm: _readDouble(json['distanceKm']),
+      segments: _readInt(json['segments'], fallback: 1),
+      aircraftType: _readString(json['aircraftType']),
+      emissionsKg: _readDouble(json['emissionsKg']),
+    );
+  }
+
   final String flightNumber;
   final DateTime date;
   final OccupancyLevel occupancy;
@@ -2269,6 +2543,20 @@ class FlightEntry {
   final int segments;
   final String aircraftType;
   final double emissionsKg;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'flightNumber': flightNumber,
+      'date': date.toIso8601String(),
+      'occupancy': occupancy.name,
+      'origin': origin,
+      'destination': destination,
+      'distanceKm': distanceKm,
+      'segments': segments,
+      'aircraftType': aircraftType,
+      'emissionsKg': emissionsKg,
+    };
+  }
 }
 
 class FlightDraft {
@@ -2338,8 +2626,19 @@ class ActivityEvent {
     return ActivityEvent(timestamp: DateTime.now(), type: type);
   }
 
+  factory ActivityEvent.fromJson(Map<String, dynamic> json) {
+    return ActivityEvent(
+      timestamp: _readDateTime(json['timestamp']),
+      type: _readString(json['type']),
+    );
+  }
+
   final DateTime timestamp;
   final String type;
+
+  Map<String, dynamic> toJson() {
+    return {'timestamp': timestamp.toIso8601String(), 'type': type};
+  }
 }
 
 class CategoryDisplayData {
@@ -2387,6 +2686,77 @@ extension LifeStageLabel on LifeStage {
     LifeStage.family => 'Family',
     LifeStage.retired => 'Retired',
   };
+}
+
+Map<String, dynamic> _asStringDynamicMap(Object? value) {
+  if (value is Map<String, dynamic>) {
+    return value;
+  }
+  if (value is Map) {
+    return value.map((key, mapValue) => MapEntry(key.toString(), mapValue));
+  }
+  return const {};
+}
+
+String _readString(Object? value, {String fallback = ''}) {
+  if (value is String) {
+    return value;
+  }
+  return fallback;
+}
+
+double _readDouble(Object? value, {double fallback = 0}) {
+  if (value is num) {
+    return value.toDouble();
+  }
+  if (value is String) {
+    return double.tryParse(value) ?? fallback;
+  }
+  return fallback;
+}
+
+int _readInt(Object? value, {int fallback = 0}) {
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value is String) {
+    return int.tryParse(value) ?? fallback;
+  }
+  return fallback;
+}
+
+bool _readBool(Object? value, {bool fallback = false}) {
+  if (value is bool) {
+    return value;
+  }
+  return fallback;
+}
+
+DateTime _readDateTime(Object? value) {
+  if (value is String) {
+    final parsed = DateTime.tryParse(value);
+    if (parsed != null) {
+      return parsed;
+    }
+  }
+  if (value is int) {
+    return DateTime.fromMillisecondsSinceEpoch(value);
+  }
+  return DateTime.now();
+}
+
+T _enumFromName<T extends Enum>(List<T> values, Object? value, T fallback) {
+  if (value is String) {
+    for (final entry in values) {
+      if (entry.name == value) {
+        return entry;
+      }
+    }
+  }
+  return fallback;
 }
 
 const defaultCountryReference = CountryReference(
