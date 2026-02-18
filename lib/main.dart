@@ -129,11 +129,20 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
 
   String? _handleAuth(String email, String password, AuthMode mode) {
     final normalizedEmail = email.trim().toLowerCase();
-    if (normalizedEmail.isEmpty || !normalizedEmail.contains('@')) {
-      return 'Enter a valid email address.';
+    final emailError = InputValidation.validateEmail(normalizedEmail);
+    if (emailError != null) {
+      return emailError;
     }
-    if (password.length < 6) {
-      return 'Password must be at least 6 characters.';
+
+    if (mode == AuthMode.login) {
+      if (password.isEmpty) {
+        return 'Enter your password.';
+      }
+    } else {
+      final passwordError = InputValidation.validatePassword(password);
+      if (passwordError != null) {
+        return passwordError;
+      }
     }
 
     if (mode == AuthMode.register) {
@@ -239,6 +248,21 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
           content: Text(
             'Flight not found. MVP only accepts known flight numbers.',
           ),
+        ),
+      );
+      return;
+    }
+
+    final hasDuplicate = user.flights.any(
+      (flight) =>
+          flight.flightNumber == entry.flightNumber &&
+          _isSameCalendarDate(flight.date, entry.date),
+    );
+
+    if (hasDuplicate) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This flight is already logged for that date.'),
         ),
       );
       return;
@@ -834,6 +858,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           onSelectionChanged: (selection) {
                             setState(() {
                               _distanceMode = selection.first;
+                              _error = null;
                             });
                           },
                         ),
@@ -843,6 +868,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           keyboardType: const TextInputType.numberWithOptions(
                             decimal: true,
                           ),
+                          onChanged: (_) {
+                            if (_error == null) {
+                              return;
+                            }
+                            setState(() {
+                              _error = null;
+                            });
+                          },
                           decoration: InputDecoration(
                             labelText: _distanceMode == DistanceMode.perDay
                                 ? 'Distance (km/day)'
@@ -876,6 +909,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           onChanged: (value) {
                             setState(() {
                               _energyKnown = value;
+                              _error = null;
                               if (!value) {
                                 final estimate =
                                     EmissionCalculator.estimateEnergyForCountry(
@@ -895,6 +929,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           keyboardType: const TextInputType.numberWithOptions(
                             decimal: true,
                           ),
+                          onChanged: (_) {
+                            if (_error == null) {
+                              return;
+                            }
+                            setState(() {
+                              _error = null;
+                            });
+                          },
                           decoration: InputDecoration(
                             labelText: _energyKnown
                                 ? 'Electricity (kWh/year)'
@@ -908,6 +950,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           keyboardType: const TextInputType.numberWithOptions(
                             decimal: true,
                           ),
+                          onChanged: (_) {
+                            if (_error == null) {
+                              return;
+                            }
+                            setState(() {
+                              _error = null;
+                            });
+                          },
                           decoration: InputDecoration(
                             labelText: _energyKnown
                                 ? 'Gas (m3/year)'
@@ -944,19 +994,27 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final electricity = double.tryParse(_electricityController.text);
     final gas = double.tryParse(_gasController.text);
 
-    if (distance == null || distance <= 0) {
+    final distanceError = InputValidation.validateCarDistance(
+      distance,
+      _distanceMode,
+    );
+    if (distanceError != null) {
       setState(() {
-        _error = 'Distance must be greater than 0.';
+        _error = distanceError;
       });
       return;
     }
 
-    if (electricity == null || electricity < 0 || gas == null || gas < 0) {
+    final energyError = InputValidation.validateEnergyUsage(electricity, gas);
+    if (energyError != null) {
       setState(() {
-        _error = 'Energy values must be valid numbers.';
+        _error = energyError;
       });
       return;
     }
+    final safeDistance = distance!;
+    final safeElectricity = electricity!;
+    final safeGas = gas!;
 
     final updated = widget.draftUser.copyWith(
       country: _country,
@@ -968,11 +1026,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       carProfile: CarProfile(
         vehicleKey: _vehicleKey,
         distanceMode: _distanceMode,
-        distanceValue: distance,
+        distanceValue: safeDistance,
       ),
       energyProfile: EnergyProfile(
-        electricityKwh: electricity,
-        gasM3: gas,
+        electricityKwh: safeElectricity,
+        gasM3: safeGas,
         isEstimated: !_energyKnown,
       ),
       onboardingComplete: true,
@@ -1176,6 +1234,8 @@ class DashboardScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  _buildRecentFlightsCard(context),
+                  const SizedBox(height: 12),
                   Card(
                     child: ListTile(
                       leading: const Icon(Icons.auto_graph),
@@ -1290,6 +1350,81 @@ class DashboardScreen extends StatelessWidget {
       ),
     );
   }
+
+  Widget _buildRecentFlightsCard(BuildContext context) {
+    final flights = [...user.flights]
+      ..sort((left, right) => right.date.compareTo(left.date));
+    final recent = flights.take(5).toList();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Recent flights',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+            ),
+            const SizedBox(height: 6),
+            if (recent.isEmpty)
+              const Text('No flights logged yet. Add a flight to see details.')
+            else
+              for (final flight in recent)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.flight),
+                  title: Text(
+                    '${flight.flightNumber}  ${flight.origin} → ${flight.destination}',
+                  ),
+                  subtitle: Text(
+                    '${_formatDate(flight.date)}  •  ${flight.occupancy.label}',
+                  ),
+                  trailing: Text('${_formatNumber(flight.emissionsKg)} kg'),
+                  onTap: () => _openFlightDetailSheet(context, flight),
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openFlightDetailSheet(BuildContext context, FlightEntry flight) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Flight details',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 10),
+                Text('Flight: ${flight.flightNumber}'),
+                Text('Route: ${flight.origin} → ${flight.destination}'),
+                Text('Date: ${_formatDate(flight.date)}'),
+                Text('Occupancy: ${flight.occupancy.label}'),
+                Text('Aircraft: ${flight.aircraftType}'),
+                Text('Distance: ${_formatNumber(flight.distanceKm)} km'),
+                Text('Segments: ${flight.segments}'),
+                const SizedBox(height: 8),
+                Text(
+                  'Estimated emissions: ${_formatNumber(flight.emissionsKg)} kg CO2e',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _MetricTile extends StatelessWidget {
@@ -1358,6 +1493,7 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
   final TextEditingController _flightNumberController = TextEditingController();
   DateTime _flightDate = DateTime.now();
   OccupancyLevel _occupancy = OccupancyLevel.halfFull;
+  String? _error;
 
   @override
   void dispose() {
@@ -1376,6 +1512,14 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
             TextField(
               controller: _flightNumberController,
               textCapitalization: TextCapitalization.characters,
+              onChanged: (_) {
+                if (_error == null) {
+                  return;
+                }
+                setState(() {
+                  _error = null;
+                });
+              },
               decoration: const InputDecoration(
                 labelText: 'Flight number',
                 border: OutlineInputBorder(),
@@ -1412,6 +1556,10 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
                 TextButton(onPressed: _pickDate, child: const Text('Select')),
               ],
             ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: const TextStyle(color: Colors.red)),
+            ],
           ],
         ),
       ),
@@ -1436,14 +1584,32 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
     if (selected != null) {
       setState(() {
         _flightDate = selected;
+        _error = null;
       });
     }
   }
 
   void _submit() {
+    final normalizedNumber = _flightNumberController.text.trim().toUpperCase();
+    final numberError = InputValidation.validateFlightNumber(normalizedNumber);
+    if (numberError != null) {
+      setState(() {
+        _error = numberError;
+      });
+      return;
+    }
+
+    final dateError = InputValidation.validateFlightDate(_flightDate);
+    if (dateError != null) {
+      setState(() {
+        _error = dateError;
+      });
+      return;
+    }
+
     Navigator.of(context).pop(
       FlightDraft(
-        flightNumber: _flightNumberController.text.trim().toUpperCase(),
+        flightNumber: normalizedNumber,
         date: _flightDate,
         occupancy: _occupancy,
       ),
@@ -1529,6 +1695,7 @@ class _EditCarDialogState extends State<EditCarDialog> {
               onSelectionChanged: (selection) {
                 setState(() {
                   _distanceMode = selection.first;
+                  _error = null;
                 });
               },
             ),
@@ -1538,6 +1705,14 @@ class _EditCarDialogState extends State<EditCarDialog> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
+              onChanged: (_) {
+                if (_error == null) {
+                  return;
+                }
+                setState(() {
+                  _error = null;
+                });
+              },
               decoration: InputDecoration(
                 labelText: _distanceMode == DistanceMode.perDay
                     ? 'Distance (km/day)'
@@ -1564,18 +1739,20 @@ class _EditCarDialogState extends State<EditCarDialog> {
 
   void _save() {
     final value = double.tryParse(_distanceController.text);
-    if (value == null || value <= 0) {
+    final error = InputValidation.validateCarDistance(value, _distanceMode);
+    if (error != null) {
       setState(() {
-        _error = 'Distance must be greater than 0.';
+        _error = error;
       });
       return;
     }
+    final safeValue = value!;
 
     Navigator.of(context).pop(
       CarProfile(
         vehicleKey: _vehicleKey,
         distanceMode: _distanceMode,
-        distanceValue: value,
+        distanceValue: safeValue,
       ),
     );
   }
@@ -1720,6 +1897,7 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
               onChanged: (value) {
                 setState(() {
                   _known = value;
+                  _error = null;
                   if (!value) {
                     final estimate =
                         EmissionCalculator.estimateEnergyForCountry(
@@ -1739,6 +1917,14 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
+              onChanged: (_) {
+                if (_error == null) {
+                  return;
+                }
+                setState(() {
+                  _error = null;
+                });
+              },
               decoration: InputDecoration(
                 labelText: _known
                     ? 'Electricity (kWh/year)'
@@ -1752,6 +1938,14 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
+              onChanged: (_) {
+                if (_error == null) {
+                  return;
+                }
+                setState(() {
+                  _error = null;
+                });
+              },
               decoration: InputDecoration(
                 labelText: _known ? 'Gas (m3/year)' : 'Gas estimate (m3/year)',
                 border: const OutlineInputBorder(),
@@ -1778,17 +1972,20 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
     final electricity = double.tryParse(_electricityController.text);
     final gas = double.tryParse(_gasController.text);
 
-    if (electricity == null || electricity < 0 || gas == null || gas < 0) {
+    final error = InputValidation.validateEnergyUsage(electricity, gas);
+    if (error != null) {
       setState(() {
-        _error = 'Energy values must be valid non-negative numbers.';
+        _error = error;
       });
       return;
     }
+    final safeElectricity = electricity!;
+    final safeGas = gas!;
 
     Navigator.of(context).pop(
       EnergyProfile(
-        electricityKwh: electricity,
-        gasM3: gas,
+        electricityKwh: safeElectricity,
+        gasM3: safeGas,
         isEstimated: !_known,
       ),
     );
@@ -2688,6 +2885,99 @@ extension LifeStageLabel on LifeStage {
   };
 }
 
+class InputValidation {
+  static final RegExp _emailPattern = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$');
+  static final RegExp _containsLetter = RegExp(r'[A-Za-z]');
+  static final RegExp _containsDigit = RegExp(r'\d');
+  static final RegExp _flightNumberPattern = RegExp(r'^[A-Z]{2}\d{3,4}$');
+
+  static String? validateEmail(String email) {
+    if (email.isEmpty || !_emailPattern.hasMatch(email)) {
+      return 'Enter a valid email address.';
+    }
+    return null;
+  }
+
+  static String? validatePassword(String password) {
+    if (password.length < 8) {
+      return 'Password must be at least 8 characters.';
+    }
+    if (!_containsLetter.hasMatch(password)) {
+      return 'Password must include at least one letter.';
+    }
+    if (!_containsDigit.hasMatch(password)) {
+      return 'Password must include at least one number.';
+    }
+    return null;
+  }
+
+  static String? validateCarDistance(double? value, DistanceMode mode) {
+    if (value == null) {
+      return 'Enter a valid distance.';
+    }
+    if (value <= 0) {
+      return 'Distance must be greater than 0.';
+    }
+
+    if (mode == DistanceMode.perDay) {
+      if (value < 1 || value > 500) {
+        return 'Distance for km/day must be between 1 and 500.';
+      }
+    } else {
+      if (value < 100 || value > 200000) {
+        return 'Distance for km/year must be between 100 and 200000.';
+      }
+    }
+
+    return null;
+  }
+
+  static String? validateEnergyUsage(double? electricity, double? gas) {
+    if (electricity == null || gas == null) {
+      return 'Energy values must be valid numbers.';
+    }
+    if (electricity < 0 || gas < 0) {
+      return 'Energy values must be non-negative.';
+    }
+    if (electricity > 50000) {
+      return 'Electricity usage seems too high (max 50000 kWh/year).';
+    }
+    if (gas > 10000) {
+      return 'Gas usage seems too high (max 10000 m3/year).';
+    }
+    return null;
+  }
+
+  static String? validateFlightNumber(String flightNumber) {
+    if (flightNumber.isEmpty) {
+      return 'Flight number is required.';
+    }
+    if (!_flightNumberPattern.hasMatch(flightNumber)) {
+      return 'Use format like KL1001 (2 letters + 3-4 digits).';
+    }
+    return null;
+  }
+
+  static String? validateFlightDate(DateTime flightDate, {DateTime? now}) {
+    final reference = now ?? DateTime.now();
+    final today = DateTime(reference.year, reference.month, reference.day);
+    final selected = DateTime(
+      flightDate.year,
+      flightDate.month,
+      flightDate.day,
+    );
+    final earliestAllowed = DateTime(today.year - 1, 1, 1);
+
+    if (selected.isAfter(today)) {
+      return 'Flight date cannot be in the future.';
+    }
+    if (selected.isBefore(earliestAllowed)) {
+      return 'Flight date is too far in the past for MVP logging.';
+    }
+    return null;
+  }
+}
+
 Map<String, dynamic> _asStringDynamicMap(Object? value) {
   if (value is Map<String, dynamic>) {
     return value;
@@ -2936,4 +3226,10 @@ String _deltaLabel(double delta) {
     return '+$rounded kg';
   }
   return '0 kg';
+}
+
+bool _isSameCalendarDate(DateTime left, DateTime right) {
+  return left.year == right.year &&
+      left.month == right.month &&
+      left.day == right.day;
 }

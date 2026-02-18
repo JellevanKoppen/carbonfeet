@@ -156,4 +156,96 @@ void main() {
       );
     });
   });
+
+  group('InputValidation', () {
+    test('validates registration password complexity', () {
+      expect(
+        InputValidation.validatePassword('abcdefg'),
+        equals('Password must be at least 8 characters.'),
+      );
+      expect(
+        InputValidation.validatePassword('abcdefgh'),
+        equals('Password must include at least one number.'),
+      );
+      expect(
+        InputValidation.validatePassword('12345678'),
+        equals('Password must include at least one letter.'),
+      );
+      expect(InputValidation.validatePassword('secure123'), isNull);
+    });
+
+    test('validates car distance ranges by distance mode', () {
+      expect(
+        InputValidation.validateCarDistance(0, DistanceMode.perDay),
+        equals('Distance must be greater than 0.'),
+      );
+      expect(
+        InputValidation.validateCarDistance(650, DistanceMode.perDay),
+        equals('Distance for km/day must be between 1 and 500.'),
+      );
+      expect(
+        InputValidation.validateCarDistance(80, DistanceMode.perYear),
+        equals('Distance for km/year must be between 100 and 200000.'),
+      );
+      expect(
+        InputValidation.validateCarDistance(14000, DistanceMode.perYear),
+        isNull,
+      );
+    });
+
+    test('validates energy input ranges', () {
+      expect(
+        InputValidation.validateEnergyUsage(null, 10),
+        equals('Energy values must be valid numbers.'),
+      );
+      expect(
+        InputValidation.validateEnergyUsage(-1, 10),
+        equals('Energy values must be non-negative.'),
+      );
+      expect(
+        InputValidation.validateEnergyUsage(51000, 10),
+        equals('Electricity usage seems too high (max 50000 kWh/year).'),
+      );
+      expect(
+        InputValidation.validateEnergyUsage(4000, 12000),
+        equals('Gas usage seems too high (max 10000 m3/year).'),
+      );
+      expect(InputValidation.validateEnergyUsage(4000, 700), isNull);
+    });
+
+    test('validates flight number format and date range', () {
+      expect(
+        InputValidation.validateFlightNumber(''),
+        equals('Flight number is required.'),
+      );
+      expect(
+        InputValidation.validateFlightNumber('K1001'),
+        equals('Use format like KL1001 (2 letters + 3-4 digits).'),
+      );
+      expect(InputValidation.validateFlightNumber('KL1001'), isNull);
+
+      final reference = DateTime(2026, 8, 1);
+      expect(
+        InputValidation.validateFlightDate(
+          DateTime(2026, 8, 2),
+          now: reference,
+        ),
+        equals('Flight date cannot be in the future.'),
+      );
+      expect(
+        InputValidation.validateFlightDate(
+          DateTime(2024, 12, 31),
+          now: reference,
+        ),
+        equals('Flight date is too far in the past for MVP logging.'),
+      );
+      expect(
+        InputValidation.validateFlightDate(
+          DateTime(2026, 1, 15),
+          now: reference,
+        ),
+        isNull,
+      );
+    });
+  });
 }
