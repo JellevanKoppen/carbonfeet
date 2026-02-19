@@ -25,7 +25,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   late bool _energyKnown;
   late TextEditingController _electricityController;
   late TextEditingController _gasController;
-  String? _error;
+  String? _distanceError;
+  String? _electricityError;
+  String? _gasError;
 
   @override
   void initState() {
@@ -112,6 +114,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             }
                             setState(() {
                               _country = value;
+                              _electricityError = null;
+                              _gasError = null;
                               if (!_energyKnown) {
                                 final estimate =
                                     EmissionCalculator.estimateEnergyForCountry(
@@ -260,7 +264,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           onSelectionChanged: (selection) {
                             setState(() {
                               _distanceMode = selection.first;
-                              _error = null;
+                              _distanceError = null;
                             });
                           },
                         ),
@@ -271,11 +275,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             decimal: true,
                           ),
                           onChanged: (_) {
-                            if (_error == null) {
+                            if (_distanceError == null) {
                               return;
                             }
                             setState(() {
-                              _error = null;
+                              _distanceError = null;
                             });
                           },
                           decoration: InputDecoration(
@@ -283,6 +287,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                                 ? 'Distance (km/day)'
                                 : 'Distance (km/year)',
                             border: const OutlineInputBorder(),
+                            errorText: _distanceError,
                           ),
                         ),
                       ],
@@ -311,7 +316,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           onChanged: (value) {
                             setState(() {
                               _energyKnown = value;
-                              _error = null;
+                              _electricityError = null;
+                              _gasError = null;
                               if (!value) {
                                 final estimate =
                                     EmissionCalculator.estimateEnergyForCountry(
@@ -332,11 +338,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             decimal: true,
                           ),
                           onChanged: (_) {
-                            if (_error == null) {
+                            if (_electricityError == null) {
                               return;
                             }
                             setState(() {
-                              _error = null;
+                              _electricityError = null;
                             });
                           },
                           decoration: InputDecoration(
@@ -344,6 +350,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                                 ? 'Electricity (kWh/year)'
                                 : 'Electricity estimate (kWh/year)',
                             border: const OutlineInputBorder(),
+                            errorText: _electricityError,
                           ),
                         ),
                         const SizedBox(height: 10),
@@ -353,11 +360,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             decimal: true,
                           ),
                           onChanged: (_) {
-                            if (_error == null) {
+                            if (_gasError == null) {
                               return;
                             }
                             setState(() {
-                              _error = null;
+                              _gasError = null;
                             });
                           },
                           decoration: InputDecoration(
@@ -365,16 +372,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                                 ? 'Gas (m3/year)'
                                 : 'Gas estimate (m3/year)',
                             border: const OutlineInputBorder(),
+                            errorText: _gasError,
                           ),
                         ),
                       ],
                     ),
                   ),
                 ),
-                if (_error != null) ...[
-                  const SizedBox(height: 10),
-                  Text(_error!, style: const TextStyle(color: Colors.red)),
-                ],
                 const SizedBox(height: 18),
                 FilledButton(
                   onPressed: _finish,
@@ -402,7 +406,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
     if (distanceError != null) {
       setState(() {
-        _error = distanceError;
+        _distanceError = distanceError;
+        _electricityError = null;
+        _gasError = null;
       });
       return;
     }
@@ -410,10 +416,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final energyError = InputValidation.validateEnergyUsage(electricity, gas);
     if (energyError != null) {
       setState(() {
-        _error = energyError;
+        final fieldError = _EnergyFieldError.fromValidationError(energyError);
+        _distanceError = null;
+        _electricityError = fieldError.electricity;
+        _gasError = fieldError.gas;
       });
       return;
     }
+    setState(() {
+      _distanceError = null;
+      _electricityError = null;
+      _gasError = null;
+    });
     final safeDistance = distance!;
     final safeElectricity = electricity!;
     final safeGas = gas!;

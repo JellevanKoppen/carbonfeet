@@ -11,7 +11,8 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
   final TextEditingController _flightNumberController = TextEditingController();
   DateTime _flightDate = DateTime.now();
   OccupancyLevel _occupancy = OccupancyLevel.halfFull;
-  String? _error;
+  String? _flightNumberError;
+  String? _flightDateError;
 
   @override
   void dispose() {
@@ -31,17 +32,18 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
               controller: _flightNumberController,
               textCapitalization: TextCapitalization.characters,
               onChanged: (_) {
-                if (_error == null) {
+                if (_flightNumberError == null) {
                   return;
                 }
                 setState(() {
-                  _error = null;
+                  _flightNumberError = null;
                 });
               },
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Flight number',
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
                 hintText: 'Example: KL1001',
+                errorText: _flightNumberError,
               ),
             ),
             const SizedBox(height: 12),
@@ -74,9 +76,12 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
                 TextButton(onPressed: _pickDate, child: const Text('Select')),
               ],
             ),
-            if (_error != null) ...[
+            if (_flightDateError != null) ...[
               const SizedBox(height: 8),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(
+                _flightDateError!,
+                style: const TextStyle(color: Colors.red),
+              ),
             ],
           ],
         ),
@@ -102,7 +107,7 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
     if (selected != null) {
       setState(() {
         _flightDate = selected;
-        _error = null;
+        _flightDateError = null;
       });
     }
   }
@@ -112,7 +117,8 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
     final numberError = InputValidation.validateFlightNumber(normalizedNumber);
     if (numberError != null) {
       setState(() {
-        _error = numberError;
+        _flightNumberError = numberError;
+        _flightDateError = null;
       });
       return;
     }
@@ -120,11 +126,16 @@ class _AddFlightDialogState extends State<AddFlightDialog> {
     final dateError = InputValidation.validateFlightDate(_flightDate);
     if (dateError != null) {
       setState(() {
-        _error = dateError;
+        _flightNumberError = null;
+        _flightDateError = dateError;
       });
       return;
     }
 
+    setState(() {
+      _flightNumberError = null;
+      _flightDateError = null;
+    });
     Navigator.of(context).pop(
       FlightDraft(
         flightNumber: normalizedNumber,
@@ -148,7 +159,7 @@ class _EditCarDialogState extends State<EditCarDialog> {
   late String _vehicleKey;
   late DistanceMode _distanceMode;
   late TextEditingController _distanceController;
-  String? _error;
+  String? _distanceError;
 
   @override
   void initState() {
@@ -213,7 +224,7 @@ class _EditCarDialogState extends State<EditCarDialog> {
               onSelectionChanged: (selection) {
                 setState(() {
                   _distanceMode = selection.first;
-                  _error = null;
+                  _distanceError = null;
                 });
               },
             ),
@@ -224,11 +235,11 @@ class _EditCarDialogState extends State<EditCarDialog> {
                 decimal: true,
               ),
               onChanged: (_) {
-                if (_error == null) {
+                if (_distanceError == null) {
                   return;
                 }
                 setState(() {
-                  _error = null;
+                  _distanceError = null;
                 });
               },
               decoration: InputDecoration(
@@ -236,12 +247,9 @@ class _EditCarDialogState extends State<EditCarDialog> {
                     ? 'Distance (km/day)'
                     : 'Distance (km/year)',
                 border: const OutlineInputBorder(),
+                errorText: _distanceError,
               ),
             ),
-            if (_error != null) ...[
-              const SizedBox(height: 8),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
-            ],
           ],
         ),
       ),
@@ -260,10 +268,13 @@ class _EditCarDialogState extends State<EditCarDialog> {
     final error = InputValidation.validateCarDistance(value, _distanceMode);
     if (error != null) {
       setState(() {
-        _error = error;
+        _distanceError = error;
       });
       return;
     }
+    setState(() {
+      _distanceError = null;
+    });
     final safeValue = value!;
 
     Navigator.of(context).pop(
@@ -379,7 +390,8 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
   late bool _known;
   late TextEditingController _electricityController;
   late TextEditingController _gasController;
-  String? _error;
+  String? _electricityError;
+  String? _gasError;
 
   @override
   void initState() {
@@ -415,7 +427,8 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
               onChanged: (value) {
                 setState(() {
                   _known = value;
-                  _error = null;
+                  _electricityError = null;
+                  _gasError = null;
                   if (!value) {
                     final estimate =
                         EmissionCalculator.estimateEnergyForCountry(
@@ -436,11 +449,11 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
                 decimal: true,
               ),
               onChanged: (_) {
-                if (_error == null) {
+                if (_electricityError == null) {
                   return;
                 }
                 setState(() {
-                  _error = null;
+                  _electricityError = null;
                 });
               },
               decoration: InputDecoration(
@@ -448,6 +461,7 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
                     ? 'Electricity (kWh/year)'
                     : 'Electricity estimate (kWh/year)',
                 border: const OutlineInputBorder(),
+                errorText: _electricityError,
               ),
             ),
             const SizedBox(height: 10),
@@ -457,22 +471,19 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
                 decimal: true,
               ),
               onChanged: (_) {
-                if (_error == null) {
+                if (_gasError == null) {
                   return;
                 }
                 setState(() {
-                  _error = null;
+                  _gasError = null;
                 });
               },
               decoration: InputDecoration(
                 labelText: _known ? 'Gas (m3/year)' : 'Gas estimate (m3/year)',
                 border: const OutlineInputBorder(),
+                errorText: _gasError,
               ),
             ),
-            if (_error != null) ...[
-              const SizedBox(height: 8),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
-            ],
           ],
         ),
       ),
@@ -493,10 +504,16 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
     final error = InputValidation.validateEnergyUsage(electricity, gas);
     if (error != null) {
       setState(() {
-        _error = error;
+        final fieldError = _EnergyFieldError.fromValidationError(error);
+        _electricityError = fieldError.electricity;
+        _gasError = fieldError.gas;
       });
       return;
     }
+    setState(() {
+      _electricityError = null;
+      _gasError = null;
+    });
     final safeElectricity = electricity!;
     final safeGas = gas!;
 
@@ -507,5 +524,22 @@ class _EditEnergyDialogState extends State<EditEnergyDialog> {
         isEstimated: !_known,
       ),
     );
+  }
+}
+
+class _EnergyFieldError {
+  const _EnergyFieldError({this.electricity, this.gas});
+
+  final String? electricity;
+  final String? gas;
+
+  factory _EnergyFieldError.fromValidationError(String error) {
+    if (error.contains('Electricity')) {
+      return _EnergyFieldError(electricity: error);
+    }
+    if (error.contains('Gas')) {
+      return _EnergyFieldError(gas: error);
+    }
+    return _EnergyFieldError(electricity: error, gas: error);
   }
 }

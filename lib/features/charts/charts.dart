@@ -76,6 +76,11 @@ class _TrendPainter extends CustomPainter {
     if (points.isEmpty) {
       return;
     }
+    if (points.length == 1) {
+      final dotPaint = Paint()..color = const Color(0xFF1D3557);
+      canvas.drawCircle(Offset(size.width / 2, size.height / 2), 3, dotPaint);
+      return;
+    }
 
     final maxValue = points.reduce(math.max);
     final minValue = points.reduce(math.min);

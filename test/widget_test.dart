@@ -26,4 +26,20 @@ void main() {
 
     expect(find.text('Build your baseline projection'), findsOneWidget);
   });
+
+  testWidgets('auth shows inline email and password validation errors', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).at(0), 'invalid-email');
+    await tester.enterText(find.byType(TextField).at(1), '123');
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Create account'));
+    await tester.pump();
+
+    expect(find.text('Enter a valid email address.'), findsOneWidget);
+    expect(find.text('Password must be at least 8 characters.'), findsOneWidget);
+  });
 }

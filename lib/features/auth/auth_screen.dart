@@ -14,7 +14,9 @@ class _AuthScreenState extends State<AuthScreen> {
   final _passwordController = TextEditingController();
 
   AuthMode _mode = AuthMode.register;
-  String? _error;
+  String? _emailError;
+  String? _passwordError;
+  String? _formError;
 
   @override
   void dispose() {
@@ -74,7 +76,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       onSelectionChanged: (selection) {
                         setState(() {
                           _mode = selection.first;
-                          _error = null;
+                          _clearErrors();
                         });
                       },
                     ),
@@ -82,23 +84,43 @@ class _AuthScreenState extends State<AuthScreen> {
                     TextField(
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
-                      decoration: const InputDecoration(
+                      onChanged: (_) {
+                        if (_emailError == null && _formError == null) {
+                          return;
+                        }
+                        setState(() {
+                          _emailError = null;
+                          _formError = null;
+                        });
+                      },
+                      decoration: InputDecoration(
                         labelText: 'Email',
-                        border: OutlineInputBorder(),
+                        border: const OutlineInputBorder(),
+                        errorText: _emailError,
                       ),
                     ),
                     const SizedBox(height: 12),
                     TextField(
                       controller: _passwordController,
                       obscureText: true,
-                      decoration: const InputDecoration(
+                      onChanged: (_) {
+                        if (_passwordError == null && _formError == null) {
+                          return;
+                        }
+                        setState(() {
+                          _passwordError = null;
+                          _formError = null;
+                        });
+                      },
+                      decoration: InputDecoration(
                         labelText: 'Password',
-                        border: OutlineInputBorder(),
+                        border: const OutlineInputBorder(),
+                        errorText: _passwordError,
                       ),
                     ),
-                    if (_error != null) ...[
+                    if (_formError != null) ...[
                       const SizedBox(height: 10),
-                      Text(_error!, style: const TextStyle(color: Colors.red)),
+                      Text(_formError!, style: const TextStyle(color: Colors.red)),
                     ],
                     const SizedBox(height: 16),
                     FilledButton(
@@ -120,14 +142,50 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   void _submit() {
-    final error = widget.onSubmit(
-      _emailController.text,
-      _passwordController.text,
-      _mode,
-    );
+    final normalizedEmail = _emailController.text.trim().toLowerCase();
+    final password = _passwordController.text;
+    final emailError = InputValidation.validateEmail(normalizedEmail);
+    final passwordError = _mode == AuthMode.register
+        ? InputValidation.validatePassword(password)
+        : (password.isEmpty ? 'Enter your password.' : null);
+    if (emailError != null || passwordError != null) {
+      setState(() {
+        _emailError = emailError;
+        _passwordError = passwordError;
+        _formError = null;
+      });
+      return;
+    }
 
+    final error = widget.onSubmit(normalizedEmail, password, _mode);
     setState(() {
-      _error = error;
+      _clearErrors();
+      if (error == null) {
+        return;
+      }
+      if (error == 'An account for this email already exists.') {
+        _emailError = error;
+        return;
+      }
+      if (error == 'Incorrect email or password.') {
+        _formError = error;
+        return;
+      }
+      if (error.contains('email')) {
+        _emailError = error;
+        return;
+      }
+      if (error.contains('Password') || error.contains('password')) {
+        _passwordError = error;
+        return;
+      }
+      _formError = error;
     });
+  }
+
+  void _clearErrors() {
+    _emailError = null;
+    _passwordError = null;
+    _formError = null;
   }
 }
