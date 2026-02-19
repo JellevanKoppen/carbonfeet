@@ -15,23 +15,26 @@ After each meaningful implementation change, agents should update this file with
 ## 0) Latest update (2026-02-19)
 
 ### Implemented in this iteration
-- Added production-ready HTTP remote state client path:
-  - introduced `HttpRemoteStateClient` with `GET`/`PUT` state operations and JSON payload handling.
-  - added `IoRemoteHttpTransport` for real network requests and `RemoteHttpTransport` abstraction for testability.
-  - added status/error mapping (`RemoteStateUnavailable` for transient statuses; `RemoteStateRequestFailed` for non-retryable request failures).
-- Wired environment-based repository selection:
-  - added compile-time configuration via `--dart-define` flags in app bootstrap.
-  - app now builds `RemoteAppRepository` with HTTP client when remote mode is enabled and base URL is provided.
-  - invalid/empty remote config safely falls back to `LocalAppRepository`.
-- Expanded test coverage for production remote-client behavior:
-  - new remote HTTP client tests for load/save request shape, status handling, auth header behavior, and default repository fallback.
-  - retained retry/backoff repository coverage and retry-action widget coverage from previous slice.
+- Added explicit unauthorized/session-expired handling in remote state path:
+  - introduced `RemoteStateUnauthorized` and mapped HTTP `401/403` responses to this dedicated exception in `HttpRemoteStateClient`.
+  - preserved existing behavior where transient statuses map to `RemoteStateUnavailable` and non-auth non-transient statuses map to `RemoteStateRequestFailed`.
+- Propagated session-expired semantics through repository results:
+  - added `sessionExpired` result states for auth, flight post, and profile mutation flows.
+  - `RemoteAppRepository` now clears active session on unauthorized hydrate/save failures and persists logged-out local state.
+  - unauthorized commit attempts now roll back in-memory changes before forcing re-auth.
+- Added shell/UI forced re-auth prompt path:
+  - app shell now handles `sessionExpired` mutation outcomes by logging out and showing an explicit auth notice message.
+  - auth screen renders a session notice banner so users understand why they were redirected to sign in.
+- Expanded test coverage for unauthorized path behavior:
+  - remote HTTP client tests now verify unauthorized mapping (`401/403`) separately from generic `4xx` request-failed behavior.
+  - repository tests cover unauthorized hydrate handling, unauthorized register/save behavior, and rollback + logout semantics on unauthorized mutations.
+  - widget test covers post-submission unauthorized flow forcing logout with visible re-auth prompt.
 - Verified local quality gates with successful `flutter analyze` and `flutter test`.
 
 ### Priority and scope changes
-- CF-P0-11 moved to done for production HTTP remote client + environment wiring.
-- TEST-11 scope expanded to include production HTTP client request/response behavior.
-- Slice A now centers on secure session/token lifecycle and explicit unauthorized handling semantics.
+- CF-P0-12 (explicit unauthorized/session-expired handling path) moved to done.
+- TEST-11 scope expanded to include unauthorized mapping and forced re-auth outcomes.
+- Slice A now centers on endpoint contract alignment and secure session/token lifecycle implementation.
 
 ### Remaining open focus
 - Validate and finalize backend endpoint contract details for the HTTP remote client (auth model, payload envelope, status semantics).
@@ -70,7 +73,7 @@ After each meaningful implementation change, agents should update this file with
 |---|---|---|
 | Local persistence | Implemented | SharedPreferences state storage and hydration |
 | Data model serialization | Implemented | JSON round-trip for user/profile/flights/activity |
-| Multi-device sync | Partial | Remote repository path now supports simulated and HTTP client implementations; backend contract hardening and auth/session lifecycle are pending |
+| Multi-device sync | Partial | Remote repository path supports simulated and HTTP client implementations with explicit unauthorized/logout handling; backend contract hardening and secure token lifecycle are pending |
 | Offline conflict strategy | Not implemented | No sync model exists yet |
 | State architecture | Implemented (phase 1) | Code split into `lib/features/*`, `lib/domain/*`, `lib/data/*`; `main.dart` acts as app shell |
 | Auth/user repository seam | Implemented (local + remote-ready) | Async result-based `AppRepository` contract with `LocalAppRepository` and `RemoteAppRepository` implementations |
@@ -85,7 +88,7 @@ After each meaningful implementation change, agents should update this file with
 | Onboarding validation | Implemented (inline) | Car and energy ranges validated with field-level inline errors |
 | Flight dialog validation | Implemented (inline) | Flight number/date validation shown inline in flight dialog |
 | Duplicate flight protection | Implemented | Blocks same flight number on same date |
-| Async submission loading/error handling | Implemented | Auth/post submissions expose in-flight UI, explicit failure feedback, and retry actions for transient unavailable paths |
+| Async submission loading/error handling | Implemented | Auth/post submissions expose in-flight UI, explicit failure feedback, retry actions for transient unavailable paths, and forced re-auth handling for unauthorized session expiry |
 | Dashboard data quality guards | Implemented | Loading/empty/error states added for dashboard sections with malformed-data protection |
 | Advanced edge-case handling | Partial | Plausibility rules improved, but not exhaustive yet |
 
@@ -101,7 +104,7 @@ After each meaningful implementation change, agents should update this file with
 | Dashboard widget tests | Implemented | Recent flights detail drill-down plus loading/error guard-state coverage |
 | Post/simulator flow widget tests | Implemented | Flight known/unknown/duplicate flows, car/diet/energy post update flows, and simulator scenario/delta rendering are covered |
 | Async submission state widget tests | Implemented | Auth submit loading state + post submission failure/loading feedback + retry action recovery are covered |
-| Remote repository tests | Implemented | Success path, transient retry recovery, retry-exhausted rollback, and HTTP client request/response behavior are covered |
+| Remote repository tests | Implemented | Success path, transient retry recovery, retry-exhausted rollback, HTTP client request/response behavior, and unauthorized forced-logout/session-expiry behavior are covered |
 | CI pipeline checks | Implemented | GitHub Actions runs analyze + test on push/PR |
 | Golden and integration tests | Not implemented | No visual regression or end-to-end suite yet |
 
@@ -136,6 +139,7 @@ After each meaningful implementation change, agents should update this file with
 | CF-P0-09 | Async backend submission UX | ✅ Done: auth and post submissions now show in-flight UI, disable conflicting actions, and surface unavailable-path errors |
 | CF-P0-10 | Remote retry resilience | ✅ Done: retry/backoff policy for transient remote failures + post-level retry actions with coverage for success-after-retry and rollback-on-exhaustion |
 | CF-P0-11 | Production HTTP remote client wiring | ✅ Done: `HttpRemoteStateClient` + transport abstraction + `--dart-define` app wiring with local fallback and unit coverage |
+| CF-P0-12 | Unauthorized/session-expired handling path | ✅ Done: `401/403` mapped to explicit unauthorized error, repository-level forced logout semantics, and auth re-prompt UX with test coverage |
 
 ## P1: Product depth and user value
 
@@ -181,7 +185,7 @@ After each meaningful implementation change, agents should update this file with
 | TEST-06 | Dashboard interaction tests | ✅ Covered: recent flights detail drill-down + loading/error guarded state rendering |
 | TEST-09 | Non-flight post widget tests | ✅ Covered: car/diet/energy post update flows mutate dashboard projection and category totals |
 | TEST-10 | Async submission widgets | ✅ Covered: auth submitting state and post submission in-flight/error handling |
-| TEST-11 | Remote repository behavior | ✅ Covered: simulated/HTTP remote client paths, retry behavior, and unavailable rollback outcomes |
+| TEST-11 | Remote repository behavior | ✅ Covered: simulated/HTTP remote client paths, retry behavior, unavailable rollback outcomes, and unauthorized forced-logout/session-expiry outcomes |
 | TEST-07 | Golden tests | Dashboard and onboarding responsive snapshots |
 | TEST-08 | Integration smoke tests | Register/login/onboarding/log flight/end-to-end summary check |
 
@@ -190,7 +194,7 @@ After each meaningful implementation change, agents should update this file with
 ### Slice A (highest urgency)
 1. Align `HttpRemoteStateClient` with backend contract (auth headers/tokens, payload envelope, non-2xx semantics, API versioning).
 2. Add secure remote session/token lifecycle for auth (login, restore, expiry handling).
-3. Add explicit unauthorized/session-expired handling path (forced logout + re-auth prompt) on remote auth failures.
+3. ✅ Done: explicit unauthorized/session-expired handling path (forced logout + re-auth prompt) on remote auth failures.
 
 ### Slice B
 1. Implement flight provider abstraction and history management (CF-P1-01, CF-P1-02, CF-P1-03).

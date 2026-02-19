@@ -109,6 +109,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
   bool _isHydrating = true;
   bool _isAuthSubmitting = false;
   bool _isPostSubmissionInProgress = false;
+  String? _authNotice;
 
   @override
   void initState() {
@@ -125,7 +126,11 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
 
     final activeEmail = _repository.activeEmail;
     if (activeEmail == null) {
-      return AuthScreen(onSubmit: _handleAuth, isSubmitting: _isAuthSubmitting);
+      return AuthScreen(
+        onSubmit: _handleAuth,
+        isSubmitting: _isAuthSubmitting,
+        noticeMessage: _authNotice,
+      );
     }
 
     final activeUser = _repository.activeUser;
@@ -137,7 +142,11 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
         _repository.logout();
         setState(() {});
       });
-      return AuthScreen(onSubmit: _handleAuth, isSubmitting: _isAuthSubmitting);
+      return AuthScreen(
+        onSubmit: _handleAuth,
+        isSubmitting: _isAuthSubmitting,
+        noticeMessage: _authNotice,
+      );
     }
 
     if (!activeUser.onboardingComplete) {
@@ -209,10 +218,14 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
 
       switch (result.status) {
         case AuthActionStatus.authenticated:
-          setState(() {});
+          setState(() {
+            _authNotice = null;
+          });
           return null;
         case AuthActionStatus.invalidCredentials:
           return 'Incorrect email or password.';
+        case AuthActionStatus.sessionExpired:
+          return 'Session expired. Please sign in again.';
         case AuthActionStatus.unavailable:
           return 'Login is temporarily unavailable. Please try again.';
         case AuthActionStatus.emailAlreadyExists:
@@ -239,10 +252,14 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
 
     switch (result.status) {
       case AuthActionStatus.authenticated:
-        setState(() {});
+        setState(() {
+          _authNotice = null;
+        });
         return null;
       case AuthActionStatus.emailAlreadyExists:
         return 'An account for this email already exists.';
+      case AuthActionStatus.sessionExpired:
+        return 'Session expired. Please sign in again.';
       case AuthActionStatus.unavailable:
         return 'Account creation is temporarily unavailable. Please try again.';
       case AuthActionStatus.invalidCredentials:
@@ -345,6 +362,8 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       case AddFlightStatus.noActiveUser:
         _repository.logout();
         setState(() {});
+      case AddFlightStatus.sessionExpired:
+        _expireSessionAndPromptReauth();
       case AddFlightStatus.added:
         final entry = result.entry;
         if (entry == null) {
@@ -421,6 +440,10 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       setState(() {});
       return;
     }
+    if (result.status == MutationStatus.sessionExpired) {
+      _expireSessionAndPromptReauth();
+      return;
+    }
     if (result.status == MutationStatus.unavailable) {
       _showPostRetrySnackBar(message: unavailableMessage, onRetry: onRetry);
       return;
@@ -482,6 +505,13 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
   void _updateActiveUser(UserData next) {
     _repository.updateActiveUser(next);
     setState(() {});
+  }
+
+  void _expireSessionAndPromptReauth() {
+    _repository.logout();
+    setState(() {
+      _authNotice = 'Session expired. Please log in again to continue.';
+    });
   }
 
   Future<T?> _runPostMutation<T>(Future<T> Function() operation) async {

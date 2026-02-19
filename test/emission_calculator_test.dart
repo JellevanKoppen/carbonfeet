@@ -50,6 +50,38 @@ class _FlakyRemoteStateClient implements RemoteStateClient {
   }
 }
 
+class _UnauthorizedRemoteStateClient implements RemoteStateClient {
+  _UnauthorizedRemoteStateClient({
+    PersistedAppState? initialState,
+    this.failOnLoad = false,
+    this.failOnSave = false,
+  }) : _state = initialState ?? const PersistedAppState.empty();
+
+  PersistedAppState _state;
+  bool failOnLoad;
+  bool failOnSave;
+  int loadCalls = 0;
+  int saveCalls = 0;
+
+  @override
+  Future<PersistedAppState> load() async {
+    loadCalls += 1;
+    if (failOnLoad) {
+      throw const RemoteStateUnauthorized();
+    }
+    return PersistedAppState.fromJson(_state.toJson());
+  }
+
+  @override
+  Future<void> save(PersistedAppState state) async {
+    saveCalls += 1;
+    if (failOnSave) {
+      throw const RemoteStateUnauthorized();
+    }
+    _state = PersistedAppState.fromJson(state.toJson());
+  }
+}
+
 void main() {
   group('EmissionCalculator', () {
     test('summarize computes baseline, ytd, and projection with flights', () {
@@ -606,6 +638,113 @@ void main() {
       expect(repository.activeEmail, equals('remote-load@example.com'));
       expect(repository.activeUser?.onboardingComplete, isTrue);
     });
+
+    test(
+      'hydrate clears active session when remote reports unauthorized',
+      () async {
+        final user = UserData.empty(
+          email: 'remote-unauthorized-load@example.com',
+        ).copyWith(onboardingComplete: true);
+        final stateStore = _InMemoryAppStateStore()
+          ..state = PersistedAppState(
+            credentials: const {
+              'remote-unauthorized-load@example.com': 'secure123',
+            },
+            users: {'remote-unauthorized-load@example.com': user},
+            activeEmail: 'remote-unauthorized-load@example.com',
+          );
+        final remoteClient = _UnauthorizedRemoteStateClient(
+          initialState: stateStore.state,
+          failOnLoad: true,
+        );
+        final repository = RemoteAppRepository(
+          remoteClient: remoteClient,
+          stateStore: stateStore,
+        );
+
+        await repository.hydrate();
+
+        expect(remoteClient.loadCalls, equals(1));
+        expect(repository.activeEmail, isNull);
+        expect(repository.activeUser, isNull);
+        expect(
+          stateStore.state.users.containsKey(
+            'remote-unauthorized-load@example.com',
+          ),
+          isTrue,
+        );
+        expect(stateStore.state.activeEmail, isNull);
+      },
+    );
+
+    test('register maps unauthorized save to session expired', () async {
+      final stateStore = _InMemoryAppStateStore();
+      final remoteClient = _UnauthorizedRemoteStateClient(failOnSave: true);
+      final repository = RemoteAppRepository(
+        remoteClient: remoteClient,
+        stateStore: stateStore,
+      );
+
+      await repository.hydrate();
+      final auth = await repository.register(
+        'remote-unauthorized-register@example.com',
+        'secure123',
+      );
+
+      expect(auth.status, equals(AuthActionStatus.sessionExpired));
+      expect(repository.activeEmail, isNull);
+      expect(repository.activeUser, isNull);
+      expect(stateStore.state.credentials, isEmpty);
+      expect(stateStore.state.activeEmail, isNull);
+    });
+
+    test(
+      'profile mutation maps unauthorized save to session expired and rolls back',
+      () async {
+        final user = UserData.empty(
+          email: 'remote-unauthorized-mutation@example.com',
+        ).copyWith(onboardingComplete: true);
+        final stateStore = _InMemoryAppStateStore()
+          ..state = PersistedAppState(
+            credentials: const {
+              'remote-unauthorized-mutation@example.com': 'secure123',
+            },
+            users: {'remote-unauthorized-mutation@example.com': user},
+            activeEmail: 'remote-unauthorized-mutation@example.com',
+          );
+        final remoteClient = _UnauthorizedRemoteStateClient(
+          initialState: stateStore.state,
+          failOnSave: true,
+        );
+        final repository = RemoteAppRepository(
+          remoteClient: remoteClient,
+          stateStore: stateStore,
+        );
+
+        await repository.hydrate();
+
+        final result = await repository.updateCarProfile(
+          const CarProfile(
+            vehicleKey: 'toyota_corolla',
+            distanceMode: DistanceMode.perYear,
+            distanceValue: 8000,
+          ),
+        );
+
+        expect(result.status, equals(MutationStatus.sessionExpired));
+        expect(repository.activeEmail, isNull);
+        expect(repository.activeUser, isNull);
+        expect(stateStore.state.activeEmail, isNull);
+        expect(
+          stateStore
+              .state
+              .users['remote-unauthorized-mutation@example.com']!
+              .carProfile
+              .distanceValue,
+          equals(user.carProfile.distanceValue),
+        );
+      },
+    );
   });
 
   group('InputValidation', () {

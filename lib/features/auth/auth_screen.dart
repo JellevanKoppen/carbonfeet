@@ -4,12 +4,14 @@ class AuthScreen extends StatefulWidget {
   const AuthScreen({
     required this.onSubmit,
     this.isSubmitting = false,
+    this.noticeMessage,
     super.key,
   });
 
   final Future<String?> Function(String email, String password, AuthMode mode)
   onSubmit;
   final bool isSubmitting;
+  final String? noticeMessage;
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -67,6 +69,22 @@ class _AuthScreenState extends State<AuthScreen> {
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 20),
+                    if (widget.noticeMessage != null) ...[
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFF3CD),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: Text(
+                            widget.noticeMessage!,
+                            style: const TextStyle(color: Color(0xFF664D03)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
                     SegmentedButton<AuthMode>(
                       selected: <AuthMode>{_mode},
                       segments: const [
@@ -130,7 +148,10 @@ class _AuthScreenState extends State<AuthScreen> {
                     ),
                     if (_formError != null) ...[
                       const SizedBox(height: 10),
-                      Text(_formError!, style: const TextStyle(color: Colors.red)),
+                      Text(
+                        _formError!,
+                        style: const TextStyle(color: Colors.red),
+                      ),
                     ],
                     if (widget.isSubmitting) ...[
                       const SizedBox(height: 10),

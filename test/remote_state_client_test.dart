@@ -151,6 +151,27 @@ void main() {
     },
   );
 
+  test('http remote client maps unauthorized load status to unauthorized', () {
+    final transport = _RecordingTransport(
+      handler:
+          ({
+            required method,
+            required url,
+            required headers,
+            body,
+            required timeout,
+          }) async {
+            return const RemoteHttpResponse(statusCode: 401, body: '');
+          },
+    );
+    final client = HttpRemoteStateClient(
+      baseUrl: 'https://api.example.com/',
+      transport: transport,
+    );
+
+    expect(client.load(), throwsA(isA<RemoteStateUnauthorized>()));
+  });
+
   test(
     'http remote client save sends PUT with auth token and payload',
     () async {
@@ -195,7 +216,7 @@ void main() {
     },
   );
 
-  test('http remote client save maps 4xx to request failed', () async {
+  test('http remote client save maps unauthorized to session error', () async {
     final transport = _RecordingTransport(
       handler:
           ({
@@ -205,7 +226,31 @@ void main() {
             body,
             required timeout,
           }) async {
-            return const RemoteHttpResponse(statusCode: 401, body: '');
+            return const RemoteHttpResponse(statusCode: 403, body: '');
+          },
+    );
+    final client = HttpRemoteStateClient(
+      baseUrl: 'https://api.example.com/',
+      transport: transport,
+    );
+
+    expect(
+      client.save(const PersistedAppState.empty()),
+      throwsA(isA<RemoteStateUnauthorized>()),
+    );
+  });
+
+  test('http remote client save maps non-auth 4xx to request failed', () async {
+    final transport = _RecordingTransport(
+      handler:
+          ({
+            required method,
+            required url,
+            required headers,
+            body,
+            required timeout,
+          }) async {
+            return const RemoteHttpResponse(statusCode: 422, body: '');
           },
     );
     final client = HttpRemoteStateClient(
@@ -219,7 +264,7 @@ void main() {
         isA<RemoteStateRequestFailed>().having(
           (error) => error.statusCode,
           'statusCode',
-          401,
+          422,
         ),
       ),
     );

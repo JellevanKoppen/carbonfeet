@@ -4,6 +4,7 @@ enum AuthActionStatus {
   authenticated,
   emailAlreadyExists,
   invalidCredentials,
+  sessionExpired,
   unavailable,
 }
 
@@ -15,7 +16,7 @@ class AuthActionResult {
   bool get isAuthenticated => status == AuthActionStatus.authenticated;
 }
 
-enum MutationStatus { updated, noActiveUser, unavailable }
+enum MutationStatus { updated, noActiveUser, sessionExpired, unavailable }
 
 class MutationResult {
   const MutationResult({required this.status});
@@ -30,6 +31,7 @@ enum AddFlightStatus {
   noActiveUser,
   unknownFlight,
   duplicateForDate,
+  sessionExpired,
   unavailable,
 }
 
@@ -351,6 +353,17 @@ class RemoteStateUnavailable implements Exception {
   String toString() => message;
 }
 
+class RemoteStateUnauthorized implements Exception {
+  const RemoteStateUnauthorized([
+    this.message = 'Remote session is unauthorized.',
+  ]);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class RemoteStateRequestFailed implements Exception {
   const RemoteStateRequestFailed({
     required this.statusCode,
@@ -455,6 +468,9 @@ class HttpRemoteStateClient implements RemoteStateClient {
     if (response.statusCode == 404) {
       return const PersistedAppState.empty();
     }
+    if (_isUnauthorizedStatusCode(response.statusCode)) {
+      throw const RemoteStateUnauthorized();
+    }
     if (_isTransientStatusCode(response.statusCode)) {
       throw const RemoteStateUnavailable();
     }
@@ -489,6 +505,9 @@ class HttpRemoteStateClient implements RemoteStateClient {
       timeout: timeout,
     );
 
+    if (_isUnauthorizedStatusCode(response.statusCode)) {
+      throw const RemoteStateUnauthorized();
+    }
     if (_isTransientStatusCode(response.statusCode)) {
       throw const RemoteStateUnavailable();
     }
@@ -516,6 +535,9 @@ class HttpRemoteStateClient implements RemoteStateClient {
 
   bool _isSuccessStatusCode(int statusCode) =>
       statusCode >= 200 && statusCode < 300;
+
+  bool _isUnauthorizedStatusCode(int statusCode) =>
+      statusCode == 401 || statusCode == 403;
 
   bool _isTransientStatusCode(int statusCode) =>
       statusCode == 408 || statusCode == 429 || statusCode >= 500;
@@ -637,6 +659,8 @@ class RemoteAppRepository implements AppRepository {
       _applyPersistedState(remote);
       _normalizeInMemoryState();
       await _persistLocalSafely();
+    } on RemoteStateUnauthorized {
+      await _expireActiveSession();
     } catch (_) {
       // Keep local cache when remote cannot be reached.
     }
@@ -655,13 +679,18 @@ class RemoteAppRepository implements AppRepository {
     _users[email] = UserData.empty(email: email);
     _activeEmail = email;
 
-    final didCommit = await _commitStateSafely();
-    if (!didCommit) {
-      _restore(snapshot);
-      return const AuthActionResult(status: AuthActionStatus.unavailable);
+    final commitStatus = await _commitStateSafely();
+    switch (commitStatus) {
+      case _RemoteCommitStatus.synced:
+        return const AuthActionResult(status: AuthActionStatus.authenticated);
+      case _RemoteCommitStatus.unauthorized:
+        _restore(snapshot);
+        await _expireActiveSession();
+        return const AuthActionResult(status: AuthActionStatus.sessionExpired);
+      case _RemoteCommitStatus.unavailable:
+        _restore(snapshot);
+        return const AuthActionResult(status: AuthActionStatus.unavailable);
     }
-
-    return const AuthActionResult(status: AuthActionStatus.authenticated);
   }
 
   @override
@@ -677,13 +706,18 @@ class RemoteAppRepository implements AppRepository {
     _users.putIfAbsent(email, () => UserData.empty(email: email));
     _activeEmail = email;
 
-    final didCommit = await _commitStateSafely();
-    if (!didCommit) {
-      _restore(snapshot);
-      return const AuthActionResult(status: AuthActionStatus.unavailable);
+    final commitStatus = await _commitStateSafely();
+    switch (commitStatus) {
+      case _RemoteCommitStatus.synced:
+        return const AuthActionResult(status: AuthActionStatus.authenticated);
+      case _RemoteCommitStatus.unauthorized:
+        _restore(snapshot);
+        await _expireActiveSession();
+        return const AuthActionResult(status: AuthActionStatus.sessionExpired);
+      case _RemoteCommitStatus.unavailable:
+        _restore(snapshot);
+        return const AuthActionResult(status: AuthActionStatus.unavailable);
     }
-
-    return const AuthActionResult(status: AuthActionStatus.authenticated);
   }
 
   @override
@@ -737,13 +771,18 @@ class RemoteAppRepository implements AppRepository {
         )
         .copyWith(email: email);
 
-    final didCommit = await _commitStateSafely();
-    if (!didCommit) {
-      _restore(snapshot);
-      return const AddFlightResult(status: AddFlightStatus.unavailable);
+    final commitStatus = await _commitStateSafely();
+    switch (commitStatus) {
+      case _RemoteCommitStatus.synced:
+        return AddFlightResult(status: AddFlightStatus.added, entry: entry);
+      case _RemoteCommitStatus.unauthorized:
+        _restore(snapshot);
+        await _expireActiveSession();
+        return const AddFlightResult(status: AddFlightStatus.sessionExpired);
+      case _RemoteCommitStatus.unavailable:
+        _restore(snapshot);
+        return const AddFlightResult(status: AddFlightStatus.unavailable);
     }
-
-    return AddFlightResult(status: AddFlightStatus.added, entry: entry);
   }
 
   @override
@@ -801,13 +840,18 @@ class RemoteAppRepository implements AppRepository {
     final snapshot = _snapshot();
     _users[email] = updater(current).copyWith(email: email);
 
-    final didCommit = await _commitStateSafely();
-    if (!didCommit) {
-      _restore(snapshot);
-      return const MutationResult(status: MutationStatus.unavailable);
+    final commitStatus = await _commitStateSafely();
+    switch (commitStatus) {
+      case _RemoteCommitStatus.synced:
+        return const MutationResult(status: MutationStatus.updated);
+      case _RemoteCommitStatus.unauthorized:
+        _restore(snapshot);
+        await _expireActiveSession();
+        return const MutationResult(status: MutationStatus.sessionExpired);
+      case _RemoteCommitStatus.unavailable:
+        _restore(snapshot);
+        return const MutationResult(status: MutationStatus.unavailable);
     }
-
-    return const MutationResult(status: MutationStatus.updated);
   }
 
   _RepositorySnapshot _snapshot() {
@@ -883,15 +927,22 @@ class RemoteAppRepository implements AppRepository {
     }
   }
 
-  Future<bool> _commitStateSafely() async {
+  Future<_RemoteCommitStatus> _commitStateSafely() async {
     final next = _buildPersistedState();
     try {
       await _withRemoteRetries(() => _remoteClient.save(next));
       await _stateStore.save(next);
-      return true;
+      return _RemoteCommitStatus.synced;
+    } on RemoteStateUnauthorized {
+      return _RemoteCommitStatus.unauthorized;
     } catch (_) {
-      return false;
+      return _RemoteCommitStatus.unavailable;
     }
+  }
+
+  Future<void> _expireActiveSession() async {
+    _activeEmail = null;
+    await _persistLocalSafely();
   }
 
   Future<T> _withRemoteRetries<T>(Future<T> Function() operation) async {
@@ -941,3 +992,5 @@ class _RepositorySnapshot {
   final Map<String, UserData> users;
   final String? activeEmail;
 }
+
+enum _RemoteCommitStatus { synced, unauthorized, unavailable }

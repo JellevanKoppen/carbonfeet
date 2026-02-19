@@ -76,6 +76,20 @@ class _DelayedAuthRepository extends LocalAppRepository {
   }
 }
 
+class _UnauthorizedSaveRemoteClient implements RemoteStateClient {
+  _UnauthorizedSaveRemoteClient({required this.state});
+
+  PersistedAppState state;
+
+  @override
+  Future<PersistedAppState> load() async => state;
+
+  @override
+  Future<void> save(PersistedAppState next) async {
+    throw const RemoteStateUnauthorized();
+  }
+}
+
 void main() {
   testWidgets('auth shows submitting feedback during async account creation', (
     WidgetTester tester,
@@ -221,6 +235,45 @@ void main() {
       equals(expectedProjection),
     );
   });
+
+  testWidgets(
+    'session expiration during post submission forces re-auth prompt',
+    (WidgetTester tester) async {
+      final user = UserData.empty(
+        email: 'post-session-expired@example.com',
+      ).copyWith(onboardingComplete: true);
+      final state = PersistedAppState(
+        credentials: const {'post-session-expired@example.com': 'secure123'},
+        users: {'post-session-expired@example.com': user},
+        activeEmail: 'post-session-expired@example.com',
+      );
+      final stateStore = _InMemoryStateStore()..state = state;
+      final repository = RemoteAppRepository(
+        remoteClient: _UnauthorizedSaveRemoteClient(state: state),
+        stateStore: stateStore,
+        retryPolicy: const RemoteRetryPolicy(
+          retryDelays: [Duration.zero, Duration.zero],
+        ),
+      );
+
+      await tester.pumpWidget(MyApp(repository: repository));
+      await tester.pumpAndSettle();
+
+      await _openPostDialog(tester, 'Car usage');
+      await tester.enterText(find.byType(TextField).first, '8000');
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Session expired. Please log in again to continue.'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Track your footprint. Improve with clarity.'),
+        findsOneWidget,
+      );
+    },
+  );
 }
 
 Future<void> _openPostDialog(WidgetTester tester, String typeLabel) async {
