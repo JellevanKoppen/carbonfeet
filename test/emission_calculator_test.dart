@@ -129,6 +129,85 @@ void main() {
       expect(byTitle['Drive 10% less']!, lessThan(currentProjection));
       expect(byTitle['One less meat day/week']!, lessThan(currentProjection));
     });
+
+    test(
+      'summarize uses leap-year day progress and excludes flights from other years',
+      () {
+        final leapYearFlight = EmissionCalculator.buildFlightEntry(
+          FlightDraft(
+            flightNumber: 'KL1001',
+            date: DateTime.utc(2024, 2, 20),
+            occupancy: OccupancyLevel.halfFull,
+          ),
+        )!;
+        final otherYearFlight = EmissionCalculator.buildFlightEntry(
+          FlightDraft(
+            flightNumber: 'DL0405',
+            date: DateTime.utc(2025, 2, 20),
+            occupancy: OccupancyLevel.halfFull,
+          ),
+        )!;
+
+        final user = UserData.empty(
+          email: 'leap@example.com',
+        ).copyWith(
+          onboardingComplete: true,
+          flights: [leapYearFlight, otherYearFlight],
+        );
+
+        final summary = EmissionCalculator.summarize(
+          user,
+          now: DateTime.utc(2024, 2, 29),
+        );
+
+        final expectedBaselineYtd = summary.baselineYearlyKg * (60 / 366);
+        final expectedYtd = expectedBaselineYtd + leapYearFlight.emissionsKg;
+
+        expect(summary.flightsYearlyKg, closeTo(leapYearFlight.emissionsKg, 0.001));
+        expect(
+          summary.projectedEndYearKg,
+          closeTo(summary.baselineYearlyKg + leapYearFlight.emissionsKg, 0.001),
+        );
+        expect(summary.yearToDateKg, closeTo(expectedYtd, 0.001));
+      },
+    );
+
+    test('projection includes future flights in year while ytd excludes them', () {
+      final previousYearFlight = EmissionCalculator.buildFlightEntry(
+        FlightDraft(
+          flightNumber: 'KL0641',
+          date: DateTime.utc(2025, 12, 31),
+          occupancy: OccupancyLevel.halfFull,
+        ),
+      )!;
+      final futureInYearFlight = EmissionCalculator.buildFlightEntry(
+        FlightDraft(
+          flightNumber: 'KL0641',
+          date: DateTime.utc(2026, 1, 2),
+          occupancy: OccupancyLevel.halfFull,
+        ),
+      )!;
+
+      final user = UserData.empty(
+        email: 'boundary@example.com',
+      ).copyWith(
+        onboardingComplete: true,
+        flights: [previousYearFlight, futureInYearFlight],
+      );
+
+      final summary = EmissionCalculator.summarize(
+        user,
+        now: DateTime.utc(2026, 1, 1),
+      );
+
+      final expectedYtd = summary.baselineYearlyKg * (1 / 365);
+      expect(summary.flightsYearlyKg, closeTo(futureInYearFlight.emissionsKg, 0.001));
+      expect(summary.yearToDateKg, closeTo(expectedYtd, 0.001));
+      expect(
+        summary.projectedEndYearKg,
+        closeTo(summary.baselineYearlyKg + futureInYearFlight.emissionsKg, 0.001),
+      );
+    });
   });
 
   group('PersistedAppState', () {
@@ -287,6 +366,64 @@ void main() {
         );
       },
     );
+
+    test('profile updates immediately change projected emissions', () async {
+      final repository = LocalAppRepository(
+        stateStore: _InMemoryAppStateStore(),
+      );
+      await repository.hydrate();
+      expect(repository.register('repo@example.com', 'secure123'), isTrue);
+
+      final initialProjection = EmissionCalculator.summarize(
+        repository.activeUser!,
+        now: DateTime.utc(2026, 6, 1),
+      ).projectedEndYearKg;
+
+      expect(
+        repository.updateCarProfile(
+          const CarProfile(
+            vehicleKey: 'tesla_model_3',
+            distanceMode: DistanceMode.perYear,
+            distanceValue: 7000,
+          ),
+        ),
+        isTrue,
+      );
+      final afterCarProjection = EmissionCalculator.summarize(
+        repository.activeUser!,
+        now: DateTime.utc(2026, 6, 1),
+      ).projectedEndYearKg;
+
+      expect(
+        repository.updateDietProfile(
+          const DietProfile(meatDaysPerWeek: 1, dairyLevel: DairyLevel.low),
+        ),
+        isTrue,
+      );
+      final afterDietProjection = EmissionCalculator.summarize(
+        repository.activeUser!,
+        now: DateTime.utc(2026, 6, 1),
+      ).projectedEndYearKg;
+
+      expect(
+        repository.updateEnergyProfile(
+          const EnergyProfile(
+            electricityKwh: 2500,
+            gasM3: 250,
+            isEstimated: false,
+          ),
+        ),
+        isTrue,
+      );
+      final afterEnergyProjection = EmissionCalculator.summarize(
+        repository.activeUser!,
+        now: DateTime.utc(2026, 6, 1),
+      ).projectedEndYearKg;
+
+      expect(afterCarProjection, lessThan(initialProjection));
+      expect(afterDietProjection, lessThan(afterCarProjection));
+      expect(afterEnergyProjection, lessThan(afterDietProjection));
+    });
   });
 
   group('InputValidation', () {

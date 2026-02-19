@@ -15,17 +15,23 @@ After each meaningful implementation change, agents should update this file with
 ## 0) Latest update (2026-02-19)
 
 ### Implemented in this iteration
-- Expanded `AppRepository` to own emissions/post mutations (`addFlight`, `updateCarProfile`, `updateDietProfile`, `updateEnergyProfile`).
-- Moved flight lookup + duplicate protection and post activity logging from app shell UI into repository operations.
-- Added repository unit tests for unknown flight rejection, duplicate flight protection, and profile update activity logging.
+- Added GitHub Actions CI workflow at `.github/workflows/flutter_ci.yml`.
+- CI now runs `flutter pub get`, `flutter analyze`, and `flutter test` on push and pull request.
+- Expanded regression tests with:
+  - leap-year YTD progression and cross-year flight filtering checks in `EmissionCalculator`.
+  - projection behavior check showing future in-year flights affect projection but not YTD.
+  - repository post-update recalculation checks for car/diet/energy profile mutations.
+- Verified local quality gates with successful `flutter analyze` and `flutter test`.
 
 ### Priority and scope changes
-- CF-P0-02 moved from in-progress to done for the local seam.
-- Slice A now shifts to CI hardening and dashboard/error-state guards.
+- CF-P0-07 moved to done.
+- CF-P0-08 moved from open to in progress (TEST-02 and TEST-04 coverage added).
+- Slice A now centers on dashboard/error-state guards and remaining widget-level regression coverage.
 
 ### Remaining open focus
 - Backend/remote implementations for repository seams are still not in place.
-- CI (`flutter analyze` + `flutter test`) and broader regression coverage remain open.
+- Broader widget-level regression coverage (flight-post + simulator flows) remains open.
+- Dashboard empty/loading/error-state consistency is still open.
 
 ## 1) Current implementation status
 
@@ -81,12 +87,13 @@ After each meaningful implementation change, agents should update this file with
 
 | Area | Status | Notes |
 |---|---|---|
-| Emission calculator unit tests | Implemented | Baseline/projection, occupancy effects, simulator |
+| Emission calculator unit tests | Implemented | Baseline/projection, occupancy effects, simulator, leap-year and year-boundary projection behavior |
 | Persistence unit tests | Implemented | Persisted state round-trip coverage |
 | Validation unit tests | Implemented | Password, car, energy, flight number/date validation |
-| Local repository unit tests | Implemented | Covers unknown/duplicate flight outcomes and profile update activity logging |
+| Local repository unit tests | Implemented | Covers unknown/duplicate flight outcomes, profile update activity logging, and projection recalculation after profile mutations |
 | Core widget smoke test | Implemented | Register flow reaches onboarding |
 | Dashboard recent flight widget test | Implemented | Recent flight list + flight detail sheet |
+| CI pipeline checks | Implemented | GitHub Actions runs analyze + test on push/PR |
 | Golden and integration tests | Not implemented | No visual regression or end-to-end suite yet |
 
 ## 2) What still needs to be done (gaps)
@@ -95,8 +102,8 @@ After each meaningful implementation change, agents should update this file with
 |---|---|---|
 | Add remote/backend auth repository implementation | Local seam exists, but production auth implementation is still missing | P0 |
 | Add remote/backend implementation for emissions/post repository seam | Local mutation seam exists, but production data path is still missing | P0 |
-| Add CI checks (analyze/test) | Prevents regressions from reaching main | P0 |
 | Expand validation and error states for all forms and async flows | Prevents silent failures and poor UX | P0 |
+| Complete widget-level regression coverage for post/simulator flows | Protects key user actions from UI regressions | P0 |
 | Flight provider abstraction (mock + real path) | Needed to move beyond hardcoded catalog | P1 |
 | Richer dashboard analytics UX (tooltips/legends/tap states) | Improves usability and clarity | P1 |
 | Achievement system redesign (event-driven) | Current heuristics are simplistic | P1 |
@@ -117,8 +124,8 @@ After each meaningful implementation change, agents should update this file with
 | CF-P0-04 | Harden persistence versioning | ✅ Done: persisted schema version + migration path for legacy payload |
 | CF-P0-05 | Form error-state consistency | All dialogs/forms show inline field errors and prevent invalid submit consistently |
 | CF-P0-06 | Dashboard data quality guards | Empty/loading/error states for each dashboard section |
-| CF-P0-07 | CI pipeline setup | Automated `flutter analyze` + `flutter test` on push/PR |
-| CF-P0-08 | Regression-focused test expansion | Unit tests for calculator internals and edge dates, plus widget tests for all post flows |
+| CF-P0-07 | CI pipeline setup | ✅ Done: GitHub Actions workflow runs `flutter analyze` + `flutter test` on push/PR |
+| CF-P0-08 | Regression-focused test expansion | In progress: unit tests extended for projection boundaries and profile-update recalculation; widget post-flow coverage still open |
 
 ## P1: Product depth and user value
 
@@ -157,9 +164,9 @@ After each meaningful implementation change, agents should update this file with
 | ID | Test task | Scope |
 |---|---|---|
 | TEST-01 | Calculator internals | Direct unit tests for car/diet/energy functions and boundary values |
-| TEST-02 | Projection boundaries | Year rollover and leap year behavior for YTD/projection accuracy |
+| TEST-02 | Projection boundaries | ✅ Covered in unit tests (year rollover + leap year behavior for YTD/projection) |
 | TEST-03 | Flight-post widget tests | Known vs unknown flights, duplicate prevention, validation messages |
-| TEST-04 | Post-update recalculation tests | Car/diet/energy updates immediately change projected emissions |
+| TEST-04 | Post-update recalculation tests | ✅ Covered in repository-driven unit tests for car/diet/energy profile updates |
 | TEST-05 | Simulator widget tests | Scenario list rendering and delta labels |
 | TEST-06 | Dashboard interaction tests | Recent flights list behavior and detail drill-down coverage |
 | TEST-07 | Golden tests | Dashboard and onboarding responsive snapshots |
@@ -168,8 +175,8 @@ After each meaningful implementation change, agents should update this file with
 ## 5) Suggested execution plan (next 3 delivery slices)
 
 ### Slice A (highest urgency)
-1. Add CI pipeline and regression test expansion (CF-P0-07, CF-P0-08).
-2. Standardize all error/empty/loading states (CF-P0-05, CF-P0-06).
+1. Standardize all error/empty/loading states (CF-P0-05, CF-P0-06).
+2. Complete remaining widget-level regression coverage for post and simulator flows (CF-P0-08, TEST-03, TEST-05).
 3. Add backend-ready implementations for the repository seams (auth + emissions/posts).
 
 ### Slice B
