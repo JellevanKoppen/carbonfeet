@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -17,6 +18,45 @@ part 'features/dashboard/dashboard_screen.dart';
 part 'features/onboarding/onboarding_screen.dart';
 part 'features/posts/post_dialogs.dart';
 part 'shared/formatting.dart';
+
+const bool _useRemoteRepository = bool.fromEnvironment(
+  'CARBONFEET_USE_REMOTE_STATE',
+  defaultValue: false,
+);
+const String _remoteStateBaseUrl = String.fromEnvironment(
+  'CARBONFEET_REMOTE_BASE_URL',
+  defaultValue: '',
+);
+const String _remoteStatePath = String.fromEnvironment(
+  'CARBONFEET_REMOTE_STATE_PATH',
+  defaultValue: 'state',
+);
+const String _remoteStateToken = String.fromEnvironment(
+  'CARBONFEET_REMOTE_STATE_TOKEN',
+  defaultValue: '',
+);
+
+AppRepository createDefaultRepository() {
+  if (!_useRemoteRepository) {
+    return LocalAppRepository();
+  }
+
+  final baseUrl = _remoteStateBaseUrl.trim();
+  if (baseUrl.isEmpty) {
+    return LocalAppRepository();
+  }
+
+  try {
+    final remoteClient = HttpRemoteStateClient(
+      baseUrl: baseUrl,
+      statePath: _remoteStatePath,
+      authToken: _remoteStateToken,
+    );
+    return RemoteAppRepository(remoteClient: remoteClient);
+  } on FormatException {
+    return LocalAppRepository();
+  }
+}
 
 void main() {
   runApp(const MyApp());
@@ -73,7 +113,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
   @override
   void initState() {
     super.initState();
-    _repository = widget.repository ?? LocalAppRepository();
+    _repository = widget.repository ?? createDefaultRepository();
     _restoreState();
   }
 

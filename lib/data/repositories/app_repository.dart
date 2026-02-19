@@ -351,6 +351,192 @@ class RemoteStateUnavailable implements Exception {
   String toString() => message;
 }
 
+class RemoteStateRequestFailed implements Exception {
+  const RemoteStateRequestFailed({
+    required this.statusCode,
+    required this.message,
+  });
+
+  final int statusCode;
+  final String message;
+
+  @override
+  String toString() => '[$statusCode] $message';
+}
+
+class RemoteHttpResponse {
+  const RemoteHttpResponse({required this.statusCode, required this.body});
+
+  final int statusCode;
+  final String body;
+}
+
+abstract interface class RemoteHttpTransport {
+  Future<RemoteHttpResponse> send({
+    required String method,
+    required Uri url,
+    required Map<String, String> headers,
+    String? body,
+    required Duration timeout,
+  });
+}
+
+class IoRemoteHttpTransport implements RemoteHttpTransport {
+  const IoRemoteHttpTransport();
+
+  @override
+  Future<RemoteHttpResponse> send({
+    required String method,
+    required Uri url,
+    required Map<String, String> headers,
+    String? body,
+    required Duration timeout,
+  }) async {
+    final client = HttpClient();
+    try {
+      final request = await client.openUrl(method, url).timeout(timeout);
+      for (final entry in headers.entries) {
+        request.headers.set(entry.key, entry.value);
+      }
+      if (body != null) {
+        request.write(body);
+      }
+
+      final response = await request.close().timeout(timeout);
+      final responseBody = await utf8.decodeStream(response).timeout(timeout);
+
+      return RemoteHttpResponse(
+        statusCode: response.statusCode,
+        body: responseBody,
+      );
+    } on TimeoutException {
+      throw const RemoteStateUnavailable('Remote state request timed out.');
+    } on SocketException {
+      throw const RemoteStateUnavailable(
+        'Could not connect to remote state service.',
+      );
+    } on HttpException {
+      throw const RemoteStateUnavailable(
+        'Remote state service is unavailable.',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+}
+
+class HttpRemoteStateClient implements RemoteStateClient {
+  HttpRemoteStateClient({
+    required String baseUrl,
+    String statePath = 'state',
+    String? authToken,
+    RemoteHttpTransport? transport,
+    this.timeout = const Duration(seconds: 8),
+  }) : _baseUri = Uri.parse(baseUrl),
+       _statePath = _normalizeStatePath(statePath),
+       _authToken = _normalizeAuthToken(authToken),
+       _transport = transport ?? const IoRemoteHttpTransport();
+
+  final Uri _baseUri;
+  final String _statePath;
+  final String? _authToken;
+  final RemoteHttpTransport _transport;
+  final Duration timeout;
+
+  @override
+  Future<PersistedAppState> load() async {
+    final response = await _transport.send(
+      method: 'GET',
+      url: _stateUri,
+      headers: _headers,
+      timeout: timeout,
+    );
+
+    if (response.statusCode == 404) {
+      return const PersistedAppState.empty();
+    }
+    if (_isTransientStatusCode(response.statusCode)) {
+      throw const RemoteStateUnavailable();
+    }
+    if (!_isSuccessStatusCode(response.statusCode)) {
+      throw RemoteStateRequestFailed(
+        statusCode: response.statusCode,
+        message: 'Failed to load remote state.',
+      );
+    }
+    if (response.body.trim().isEmpty) {
+      return const PersistedAppState.empty();
+    }
+
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map) {
+        throw const FormatException('Expected JSON object.');
+      }
+      return PersistedAppState.fromJson(_asStringDynamicMap(decoded));
+    } catch (_) {
+      throw const RemoteStateUnavailable('Remote state payload is invalid.');
+    }
+  }
+
+  @override
+  Future<void> save(PersistedAppState state) async {
+    final response = await _transport.send(
+      method: 'PUT',
+      url: _stateUri,
+      headers: _headers,
+      body: jsonEncode(state.toJson()),
+      timeout: timeout,
+    );
+
+    if (_isTransientStatusCode(response.statusCode)) {
+      throw const RemoteStateUnavailable();
+    }
+    if (!_isSuccessStatusCode(response.statusCode)) {
+      throw RemoteStateRequestFailed(
+        statusCode: response.statusCode,
+        message: 'Failed to save remote state.',
+      );
+    }
+  }
+
+  Uri get _stateUri => _baseUri.resolve(_statePath);
+
+  Map<String, String> get _headers {
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+    final authToken = _authToken;
+    if (authToken != null) {
+      headers['Authorization'] = 'Bearer $authToken';
+    }
+    return headers;
+  }
+
+  bool _isSuccessStatusCode(int statusCode) =>
+      statusCode >= 200 && statusCode < 300;
+
+  bool _isTransientStatusCode(int statusCode) =>
+      statusCode == 408 || statusCode == 429 || statusCode >= 500;
+
+  static String _normalizeStatePath(String rawPath) {
+    final trimmed = rawPath.trim();
+    if (trimmed.isEmpty) {
+      return 'state';
+    }
+    return trimmed.startsWith('/') ? trimmed.substring(1) : trimmed;
+  }
+
+  static String? _normalizeAuthToken(String? authToken) {
+    final normalized = authToken?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return null;
+    }
+    return normalized;
+  }
+}
+
 class RemoteRetryPolicy {
   const RemoteRetryPolicy({
     this.retryDelays = const [
