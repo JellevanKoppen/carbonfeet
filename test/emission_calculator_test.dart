@@ -277,9 +277,10 @@ void main() {
         stateStore: _InMemoryAppStateStore(),
       );
       await repository.hydrate();
-      expect(repository.register('repo@example.com', 'secure123'), isTrue);
+      final auth = await repository.register('repo@example.com', 'secure123');
+      expect(auth.status, equals(AuthActionStatus.authenticated));
 
-      final result = repository.addFlight(
+      final result = await repository.addFlight(
         FlightDraft(
           flightNumber: 'AA9999',
           date: DateTime(2026, 6, 1),
@@ -296,16 +297,17 @@ void main() {
         stateStore: _InMemoryAppStateStore(),
       );
       await repository.hydrate();
-      expect(repository.register('repo@example.com', 'secure123'), isTrue);
+      final auth = await repository.register('repo@example.com', 'secure123');
+      expect(auth.status, equals(AuthActionStatus.authenticated));
 
-      final first = repository.addFlight(
+      final first = await repository.addFlight(
         FlightDraft(
           flightNumber: 'KL1001',
           date: DateTime(2026, 6, 1),
           occupancy: OccupancyLevel.halfFull,
         ),
       );
-      final second = repository.addFlight(
+      final second = await repository.addFlight(
         FlightDraft(
           flightNumber: 'KL1001',
           date: DateTime(2026, 6, 1),
@@ -332,19 +334,20 @@ void main() {
           stateStore: _InMemoryAppStateStore(),
         );
         await repository.hydrate();
-        expect(repository.register('repo@example.com', 'secure123'), isTrue);
+        final auth = await repository.register('repo@example.com', 'secure123');
+        expect(auth.status, equals(AuthActionStatus.authenticated));
 
-        final carUpdated = repository.updateCarProfile(
+        final carUpdated = await repository.updateCarProfile(
           const CarProfile(
             vehicleKey: 'tesla_model_3',
             distanceMode: DistanceMode.perYear,
             distanceValue: 9000,
           ),
         );
-        final dietUpdated = repository.updateDietProfile(
+        final dietUpdated = await repository.updateDietProfile(
           const DietProfile(meatDaysPerWeek: 1, dairyLevel: DairyLevel.low),
         );
-        final energyUpdated = repository.updateEnergyProfile(
+        final energyUpdated = await repository.updateEnergyProfile(
           const EnergyProfile(
             electricityKwh: 2800,
             gasM3: 300,
@@ -352,9 +355,9 @@ void main() {
           ),
         );
 
-        expect(carUpdated, isTrue);
-        expect(dietUpdated, isTrue);
-        expect(energyUpdated, isTrue);
+        expect(carUpdated.status, equals(MutationStatus.updated));
+        expect(dietUpdated.status, equals(MutationStatus.updated));
+        expect(energyUpdated.status, equals(MutationStatus.updated));
 
         final user = repository.activeUser!;
         expect(user.carProfile.vehicleKey, equals('tesla_model_3'));
@@ -372,7 +375,8 @@ void main() {
         stateStore: _InMemoryAppStateStore(),
       );
       await repository.hydrate();
-      expect(repository.register('repo@example.com', 'secure123'), isTrue);
+      final auth = await repository.register('repo@example.com', 'secure123');
+      expect(auth.status, equals(AuthActionStatus.authenticated));
 
       final initialProjection = EmissionCalculator.summarize(
         repository.activeUser!,
@@ -380,14 +384,18 @@ void main() {
       ).projectedEndYearKg;
 
       expect(
-        repository.updateCarProfile(
+        await repository.updateCarProfile(
           const CarProfile(
             vehicleKey: 'tesla_model_3',
             distanceMode: DistanceMode.perYear,
             distanceValue: 7000,
           ),
         ),
-        isTrue,
+        isA<MutationResult>().having(
+          (result) => result.status,
+          'status',
+          MutationStatus.updated,
+        ),
       );
       final afterCarProjection = EmissionCalculator.summarize(
         repository.activeUser!,
@@ -395,10 +403,14 @@ void main() {
       ).projectedEndYearKg;
 
       expect(
-        repository.updateDietProfile(
+        await repository.updateDietProfile(
           const DietProfile(meatDaysPerWeek: 1, dairyLevel: DairyLevel.low),
         ),
-        isTrue,
+        isA<MutationResult>().having(
+          (result) => result.status,
+          'status',
+          MutationStatus.updated,
+        ),
       );
       final afterDietProjection = EmissionCalculator.summarize(
         repository.activeUser!,
@@ -406,14 +418,18 @@ void main() {
       ).projectedEndYearKg;
 
       expect(
-        repository.updateEnergyProfile(
+        await repository.updateEnergyProfile(
           const EnergyProfile(
             electricityKwh: 2500,
             gasM3: 250,
             isEstimated: false,
           ),
         ),
-        isTrue,
+        isA<MutationResult>().having(
+          (result) => result.status,
+          'status',
+          MutationStatus.updated,
+        ),
       );
       final afterEnergyProjection = EmissionCalculator.summarize(
         repository.activeUser!,
@@ -423,6 +439,50 @@ void main() {
       expect(afterCarProjection, lessThan(initialProjection));
       expect(afterDietProjection, lessThan(afterCarProjection));
       expect(afterEnergyProjection, lessThan(afterDietProjection));
+    });
+  });
+
+  group('RemoteAppRepository', () {
+    test('persists auth and flight updates through remote client', () async {
+      final remoteClient = SimulatedRemoteStateClient(
+        networkDelay: Duration.zero,
+      );
+      final repository = RemoteAppRepository(
+        remoteClient: remoteClient,
+        stateStore: _InMemoryAppStateStore(),
+      );
+
+      await repository.hydrate();
+      final auth = await repository.register('remote@example.com', 'secure123');
+      expect(auth.status, equals(AuthActionStatus.authenticated));
+
+      final addFlight = await repository.addFlight(
+        FlightDraft(
+          flightNumber: 'KL1001',
+          date: DateTime(2026, 6, 1),
+          occupancy: OccupancyLevel.halfFull,
+        ),
+      );
+      expect(addFlight.status, equals(AddFlightStatus.added));
+      expect(repository.activeUser?.flights.length, equals(1));
+    });
+
+    test('returns unavailable and rolls back on remote outage', () async {
+      final remoteClient = SimulatedRemoteStateClient(
+        networkDelay: Duration.zero,
+        failureRate: 1,
+      );
+      final repository = RemoteAppRepository(
+        remoteClient: remoteClient,
+        stateStore: _InMemoryAppStateStore(),
+      );
+
+      await repository.hydrate();
+
+      final auth = await repository.register('remote-fail@example.com', 'secure123');
+      expect(auth.status, equals(AuthActionStatus.unavailable));
+      expect(repository.activeEmail, isNull);
+      expect(repository.activeUser, isNull);
     });
   });
 

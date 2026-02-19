@@ -8,6 +8,7 @@ class DashboardScreen extends StatelessWidget {
     required this.onOpenSimulator,
     required this.onLogout,
     this.isSummaryLoading = false,
+    this.isPostSubmissionInProgress = false,
     this.summaryErrorMessage,
     super.key,
   });
@@ -18,6 +19,7 @@ class DashboardScreen extends StatelessWidget {
   final VoidCallback onOpenSimulator;
   final VoidCallback onLogout;
   final bool isSummaryLoading;
+  final bool isPostSubmissionInProgress;
   final String? summaryErrorMessage;
 
   @override
@@ -27,9 +29,17 @@ class DashboardScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('CarbonFeet'),
+        bottom: isPostSubmissionInProgress
+            ? const PreferredSize(
+                preferredSize: Size.fromHeight(2),
+                child: LinearProgressIndicator(minHeight: 2),
+              )
+            : null,
         actions: [
           IconButton(
-            onPressed: isSummaryLoading ? null : onOpenSimulator,
+            onPressed: isSummaryLoading || isPostSubmissionInProgress
+                ? null
+                : onOpenSimulator,
             tooltip: 'What if simulator',
             icon: const Icon(Icons.auto_graph),
           ),
@@ -41,7 +51,9 @@ class DashboardScreen extends StatelessWidget {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: isSummaryLoading ? null : onOpenPostMenu,
+        onPressed: isSummaryLoading || isPostSubmissionInProgress
+            ? null
+            : onOpenPostMenu,
         icon: const Icon(Icons.add),
         label: const Text('Add CO2 post'),
       ),
@@ -536,14 +548,16 @@ class DashboardScreen extends StatelessWidget {
   }
 
   Widget _buildSimulatorCard() {
-    final disabled = isSummaryLoading;
+    final disabled = isSummaryLoading || isPostSubmissionInProgress;
     return Card(
       child: ListTile(
         leading: const Icon(Icons.auto_graph),
         title: const Text('What if simulator'),
         subtitle: Text(
-          disabled
+          isSummaryLoading
               ? 'Simulator is temporarily unavailable while dashboard data refreshes.'
+              : isPostSubmissionInProgress
+              ? 'Simulator is temporarily unavailable while your latest update is saved.'
               : 'Explore how one less flight, lower driving, or less meat changes your projection.',
         ),
         trailing: const Icon(Icons.chevron_right),

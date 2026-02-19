@@ -1,9 +1,15 @@
 part of 'package:carbonfeet/main.dart';
 
 class AuthScreen extends StatefulWidget {
-  const AuthScreen({required this.onSubmit, super.key});
+  const AuthScreen({
+    required this.onSubmit,
+    this.isSubmitting = false,
+    super.key,
+  });
 
-  final String? Function(String email, String password, AuthMode mode) onSubmit;
+  final Future<String?> Function(String email, String password, AuthMode mode)
+  onSubmit;
+  final bool isSubmitting;
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -73,17 +79,20 @@ class _AuthScreenState extends State<AuthScreen> {
                           label: Text('Log in'),
                         ),
                       ],
-                      onSelectionChanged: (selection) {
-                        setState(() {
-                          _mode = selection.first;
-                          _clearErrors();
-                        });
-                      },
+                      onSelectionChanged: widget.isSubmitting
+                          ? null
+                          : (selection) {
+                              setState(() {
+                                _mode = selection.first;
+                                _clearErrors();
+                              });
+                            },
                     ),
                     const SizedBox(height: 16),
                     TextField(
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
+                      enabled: !widget.isSubmitting,
                       onChanged: (_) {
                         if (_emailError == null && _formError == null) {
                           return;
@@ -103,6 +112,7 @@ class _AuthScreenState extends State<AuthScreen> {
                     TextField(
                       controller: _passwordController,
                       obscureText: true,
+                      enabled: !widget.isSubmitting,
                       onChanged: (_) {
                         if (_passwordError == null && _formError == null) {
                           return;
@@ -122,9 +132,23 @@ class _AuthScreenState extends State<AuthScreen> {
                       const SizedBox(height: 10),
                       Text(_formError!, style: const TextStyle(color: Colors.red)),
                     ],
+                    if (widget.isSubmitting) ...[
+                      const SizedBox(height: 10),
+                      const Row(
+                        children: [
+                          SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          SizedBox(width: 8),
+                          Text('Submitting...'),
+                        ],
+                      ),
+                    ],
                     const SizedBox(height: 16),
                     FilledButton(
-                      onPressed: _submit,
+                      onPressed: widget.isSubmitting ? null : _submit,
                       child: Text(
                         _mode == AuthMode.register
                             ? 'Create account'
@@ -141,7 +165,11 @@ class _AuthScreenState extends State<AuthScreen> {
     );
   }
 
-  void _submit() {
+  Future<void> _submit() async {
+    if (widget.isSubmitting) {
+      return;
+    }
+
     final normalizedEmail = _emailController.text.trim().toLowerCase();
     final password = _passwordController.text;
     final emailError = InputValidation.validateEmail(normalizedEmail);
@@ -157,7 +185,10 @@ class _AuthScreenState extends State<AuthScreen> {
       return;
     }
 
-    final error = widget.onSubmit(normalizedEmail, password, _mode);
+    final error = await widget.onSubmit(normalizedEmail, password, _mode);
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _clearErrors();
       if (error == null) {

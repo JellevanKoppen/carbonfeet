@@ -23,7 +23,9 @@ void main() {
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  const MyApp({this.repository, super.key});
+
+  final AppRepository? repository;
 
   @override
   Widget build(BuildContext context) {
@@ -47,26 +49,31 @@ class MyApp extends StatelessWidget {
           color: Colors.white,
         ),
       ),
-      home: const CarbonFeetShell(),
+      home: CarbonFeetShell(repository: repository),
     );
   }
 }
 
 class CarbonFeetShell extends StatefulWidget {
-  const CarbonFeetShell({super.key});
+  const CarbonFeetShell({this.repository, super.key});
+
+  final AppRepository? repository;
 
   @override
   State<CarbonFeetShell> createState() => _CarbonFeetShellState();
 }
 
 class _CarbonFeetShellState extends State<CarbonFeetShell> {
-  final AppRepository _repository = LocalAppRepository();
+  late final AppRepository _repository;
 
   bool _isHydrating = true;
+  bool _isAuthSubmitting = false;
+  bool _isPostSubmissionInProgress = false;
 
   @override
   void initState() {
     super.initState();
+    _repository = widget.repository ?? LocalAppRepository();
     _restoreState();
   }
 
@@ -78,7 +85,10 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
 
     final activeEmail = _repository.activeEmail;
     if (activeEmail == null) {
-      return AuthScreen(onSubmit: _handleAuth);
+      return AuthScreen(
+        onSubmit: _handleAuth,
+        isSubmitting: _isAuthSubmitting,
+      );
     }
 
     final activeUser = _repository.activeUser;
@@ -90,7 +100,10 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
         _repository.logout();
         setState(() {});
       });
-      return AuthScreen(onSubmit: _handleAuth);
+      return AuthScreen(
+        onSubmit: _handleAuth,
+        isSubmitting: _isAuthSubmitting,
+      );
     }
 
     if (!activeUser.onboardingComplete) {
@@ -107,6 +120,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
     return DashboardScreen(
       user: activeUser,
       summary: summary,
+      isPostSubmissionInProgress: _isPostSubmissionInProgress,
       onOpenPostMenu: () => _openPostMenu(activeUser),
       onOpenSimulator: () => _openSimulator(activeUser),
       onLogout: () {
@@ -127,37 +141,79 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
     });
   }
 
-  String? _handleAuth(String email, String password, AuthMode mode) {
+  Future<String?> _handleAuth(
+    String email,
+    String password,
+    AuthMode mode,
+  ) async {
     final normalizedEmail = email.trim().toLowerCase();
     final emailError = InputValidation.validateEmail(normalizedEmail);
     if (emailError != null) {
       return emailError;
     }
 
+    setState(() {
+      _isAuthSubmitting = true;
+    });
+
     if (mode == AuthMode.login) {
       if (password.isEmpty) {
+        setState(() {
+          _isAuthSubmitting = false;
+        });
         return 'Enter your password.';
       }
-      final loggedIn = _repository.login(normalizedEmail, password);
-      if (!loggedIn) {
-        return 'Incorrect email or password.';
+
+      final result = await _repository.login(normalizedEmail, password);
+      if (!mounted) {
+        return null;
       }
-      setState(() {});
-      return null;
+
+      setState(() {
+        _isAuthSubmitting = false;
+      });
+
+      switch (result.status) {
+        case AuthActionStatus.authenticated:
+          setState(() {});
+          return null;
+        case AuthActionStatus.invalidCredentials:
+          return 'Incorrect email or password.';
+        case AuthActionStatus.unavailable:
+          return 'Login is temporarily unavailable. Please try again.';
+        case AuthActionStatus.emailAlreadyExists:
+          return 'Incorrect email or password.';
+      }
     }
 
     final passwordError = InputValidation.validatePassword(password);
     if (passwordError != null) {
+      setState(() {
+        _isAuthSubmitting = false;
+      });
       return passwordError;
     }
 
-    final registered = _repository.register(normalizedEmail, password);
-    if (!registered) {
-      return 'An account for this email already exists.';
+    final result = await _repository.register(normalizedEmail, password);
+    if (!mounted) {
+      return null;
     }
 
-    setState(() {});
-    return null;
+    setState(() {
+      _isAuthSubmitting = false;
+    });
+
+    switch (result.status) {
+      case AuthActionStatus.authenticated:
+        setState(() {});
+        return null;
+      case AuthActionStatus.emailAlreadyExists:
+        return 'An account for this email already exists.';
+      case AuthActionStatus.unavailable:
+        return 'Account creation is temporarily unavailable. Please try again.';
+      case AuthActionStatus.invalidCredentials:
+        return 'An account for this email already exists.';
+    }
   }
 
   Future<void> _openPostMenu(UserData user) async {
@@ -228,7 +284,11 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
 
-    final result = _repository.addFlight(draft);
+    final result = await _runPostMutation(() => _repository.addFlight(draft));
+    if (!mounted || result == null) {
+      return;
+    }
+
     switch (result.status) {
       case AddFlightStatus.unknownFlight:
         ScaffoldMessenger.of(context).showSnackBar(
@@ -260,6 +320,14 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
             ),
           ),
         );
+      case AddFlightStatus.unavailable:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not save flight right now. Please try again.',
+            ),
+          ),
+        );
     }
   }
 
@@ -273,10 +341,29 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
 
-    final didUpdate = _repository.updateCarProfile(updated);
-    if (!didUpdate) {
-      _repository.logout();
+    final result = await _runPostMutation(
+      () => _repository.updateCarProfile(updated),
+    );
+    if (!mounted || result == null) {
+      return;
     }
+
+    if (result.status == MutationStatus.noActiveUser) {
+      _repository.logout();
+      setState(() {});
+      return;
+    }
+    if (result.status == MutationStatus.unavailable) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not update car profile right now. Please try again.',
+          ),
+        ),
+      );
+      return;
+    }
+
     setState(() {});
   }
 
@@ -290,10 +377,29 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
 
-    final didUpdate = _repository.updateDietProfile(updated);
-    if (!didUpdate) {
-      _repository.logout();
+    final result = await _runPostMutation(
+      () => _repository.updateDietProfile(updated),
+    );
+    if (!mounted || result == null) {
+      return;
     }
+
+    if (result.status == MutationStatus.noActiveUser) {
+      _repository.logout();
+      setState(() {});
+      return;
+    }
+    if (result.status == MutationStatus.unavailable) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not update diet profile right now. Please try again.',
+          ),
+        ),
+      );
+      return;
+    }
+
     setState(() {});
   }
 
@@ -308,16 +414,55 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
 
-    final didUpdate = _repository.updateEnergyProfile(updated);
-    if (!didUpdate) {
-      _repository.logout();
+    final result = await _runPostMutation(
+      () => _repository.updateEnergyProfile(updated),
+    );
+    if (!mounted || result == null) {
+      return;
     }
+
+    if (result.status == MutationStatus.noActiveUser) {
+      _repository.logout();
+      setState(() {});
+      return;
+    }
+    if (result.status == MutationStatus.unavailable) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not update home energy right now. Please try again.',
+          ),
+        ),
+      );
+      return;
+    }
+
     setState(() {});
   }
 
   void _updateActiveUser(UserData next) {
     _repository.updateActiveUser(next);
     setState(() {});
+  }
+
+  Future<T?> _runPostMutation<T>(Future<T> Function() operation) async {
+    if (_isPostSubmissionInProgress) {
+      return null;
+    }
+
+    setState(() {
+      _isPostSubmissionInProgress = true;
+    });
+
+    try {
+      return await operation();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isPostSubmissionInProgress = false;
+        });
+      }
+    }
   }
 
   Future<void> _openSimulator(UserData user) async {
