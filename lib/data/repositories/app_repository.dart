@@ -351,6 +351,20 @@ class RemoteStateUnavailable implements Exception {
   String toString() => message;
 }
 
+class RemoteRetryPolicy {
+  const RemoteRetryPolicy({
+    this.retryDelays = const [
+      Duration(milliseconds: 250),
+      Duration(milliseconds: 500),
+      Duration(milliseconds: 1000),
+    ],
+  });
+
+  final List<Duration> retryDelays;
+
+  int get maxAttempts => retryDelays.length + 1;
+}
+
 class SimulatedRemoteStateClient implements RemoteStateClient {
   SimulatedRemoteStateClient({
     PersistedAppState? initialState,
@@ -398,11 +412,17 @@ class RemoteAppRepository implements AppRepository {
   RemoteAppRepository({
     required RemoteStateClient remoteClient,
     AppStateStore? stateStore,
+    RemoteRetryPolicy retryPolicy = const RemoteRetryPolicy(),
+    Future<void> Function(Duration delay)? waitForDelay,
   }) : _remoteClient = remoteClient,
-       _stateStore = stateStore ?? const AppStateStore();
+       _stateStore = stateStore ?? const AppStateStore(),
+       _retryPolicy = retryPolicy,
+       _waitForDelay = waitForDelay ?? _defaultWaitForDelay;
 
   final RemoteStateClient _remoteClient;
   final AppStateStore _stateStore;
+  final RemoteRetryPolicy _retryPolicy;
+  final Future<void> Function(Duration delay) _waitForDelay;
   final Map<String, String> _credentials = <String, String>{};
   final Map<String, UserData> _users = <String, UserData>{};
 
@@ -427,7 +447,7 @@ class RemoteAppRepository implements AppRepository {
     _normalizeInMemoryState();
 
     try {
-      final remote = await _remoteClient.load();
+      final remote = await _withRemoteRetries(() => _remoteClient.load());
       _applyPersistedState(remote);
       _normalizeInMemoryState();
       await _persistLocalSafely();
@@ -680,12 +700,47 @@ class RemoteAppRepository implements AppRepository {
   Future<bool> _commitStateSafely() async {
     final next = _buildPersistedState();
     try {
-      await _remoteClient.save(next);
+      await _withRemoteRetries(() => _remoteClient.save(next));
       await _stateStore.save(next);
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  Future<T> _withRemoteRetries<T>(Future<T> Function() operation) async {
+    Object? lastError;
+    StackTrace? lastStackTrace;
+
+    for (var attempt = 0; attempt < _retryPolicy.maxAttempts; attempt++) {
+      try {
+        return await operation();
+      } on RemoteStateUnavailable catch (error, stackTrace) {
+        lastError = error;
+        lastStackTrace = stackTrace;
+
+        if (attempt >= _retryPolicy.retryDelays.length) {
+          break;
+        }
+        await _waitForDelay(_retryPolicy.retryDelays[attempt]);
+      }
+    }
+
+    if (lastError != null) {
+      Error.throwWithStackTrace(
+        lastError,
+        lastStackTrace ?? StackTrace.current,
+      );
+    }
+
+    throw const RemoteStateUnavailable();
+  }
+
+  static Future<void> _defaultWaitForDelay(Duration delay) {
+    if (delay <= Duration.zero) {
+      return Future<void>.value();
+    }
+    return Future<void>.delayed(delay);
   }
 }
 

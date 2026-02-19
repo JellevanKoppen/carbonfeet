@@ -16,6 +16,40 @@ class _InMemoryAppStateStore extends AppStateStore {
   }
 }
 
+class _FlakyRemoteStateClient implements RemoteStateClient {
+  _FlakyRemoteStateClient({
+    PersistedAppState? initialState,
+    this.remainingLoadFailures = 0,
+    this.remainingSaveFailures = 0,
+  }) : _state = initialState ?? const PersistedAppState.empty();
+
+  PersistedAppState _state;
+  int remainingLoadFailures;
+  int remainingSaveFailures;
+  int loadCalls = 0;
+  int saveCalls = 0;
+
+  @override
+  Future<PersistedAppState> load() async {
+    loadCalls += 1;
+    if (remainingLoadFailures > 0) {
+      remainingLoadFailures -= 1;
+      throw const RemoteStateUnavailable();
+    }
+    return PersistedAppState.fromJson(_state.toJson());
+  }
+
+  @override
+  Future<void> save(PersistedAppState state) async {
+    saveCalls += 1;
+    if (remainingSaveFailures > 0) {
+      remainingSaveFailures -= 1;
+      throw const RemoteStateUnavailable();
+    }
+    _state = PersistedAppState.fromJson(state.toJson());
+  }
+}
+
 void main() {
   group('EmissionCalculator', () {
     test('summarize computes baseline, ytd, and projection with flights', () {
@@ -148,9 +182,7 @@ void main() {
           ),
         )!;
 
-        final user = UserData.empty(
-          email: 'leap@example.com',
-        ).copyWith(
+        final user = UserData.empty(email: 'leap@example.com').copyWith(
           onboardingComplete: true,
           flights: [leapYearFlight, otherYearFlight],
         );
@@ -163,7 +195,10 @@ void main() {
         final expectedBaselineYtd = summary.baselineYearlyKg * (60 / 366);
         final expectedYtd = expectedBaselineYtd + leapYearFlight.emissionsKg;
 
-        expect(summary.flightsYearlyKg, closeTo(leapYearFlight.emissionsKg, 0.001));
+        expect(
+          summary.flightsYearlyKg,
+          closeTo(leapYearFlight.emissionsKg, 0.001),
+        );
         expect(
           summary.projectedEndYearKg,
           closeTo(summary.baselineYearlyKg + leapYearFlight.emissionsKg, 0.001),
@@ -172,42 +207,49 @@ void main() {
       },
     );
 
-    test('projection includes future flights in year while ytd excludes them', () {
-      final previousYearFlight = EmissionCalculator.buildFlightEntry(
-        FlightDraft(
-          flightNumber: 'KL0641',
-          date: DateTime.utc(2025, 12, 31),
-          occupancy: OccupancyLevel.halfFull,
-        ),
-      )!;
-      final futureInYearFlight = EmissionCalculator.buildFlightEntry(
-        FlightDraft(
-          flightNumber: 'KL0641',
-          date: DateTime.utc(2026, 1, 2),
-          occupancy: OccupancyLevel.halfFull,
-        ),
-      )!;
+    test(
+      'projection includes future flights in year while ytd excludes them',
+      () {
+        final previousYearFlight = EmissionCalculator.buildFlightEntry(
+          FlightDraft(
+            flightNumber: 'KL0641',
+            date: DateTime.utc(2025, 12, 31),
+            occupancy: OccupancyLevel.halfFull,
+          ),
+        )!;
+        final futureInYearFlight = EmissionCalculator.buildFlightEntry(
+          FlightDraft(
+            flightNumber: 'KL0641',
+            date: DateTime.utc(2026, 1, 2),
+            occupancy: OccupancyLevel.halfFull,
+          ),
+        )!;
 
-      final user = UserData.empty(
-        email: 'boundary@example.com',
-      ).copyWith(
-        onboardingComplete: true,
-        flights: [previousYearFlight, futureInYearFlight],
-      );
+        final user = UserData.empty(email: 'boundary@example.com').copyWith(
+          onboardingComplete: true,
+          flights: [previousYearFlight, futureInYearFlight],
+        );
 
-      final summary = EmissionCalculator.summarize(
-        user,
-        now: DateTime.utc(2026, 1, 1),
-      );
+        final summary = EmissionCalculator.summarize(
+          user,
+          now: DateTime.utc(2026, 1, 1),
+        );
 
-      final expectedYtd = summary.baselineYearlyKg * (1 / 365);
-      expect(summary.flightsYearlyKg, closeTo(futureInYearFlight.emissionsKg, 0.001));
-      expect(summary.yearToDateKg, closeTo(expectedYtd, 0.001));
-      expect(
-        summary.projectedEndYearKg,
-        closeTo(summary.baselineYearlyKg + futureInYearFlight.emissionsKg, 0.001),
-      );
-    });
+        final expectedYtd = summary.baselineYearlyKg * (1 / 365);
+        expect(
+          summary.flightsYearlyKg,
+          closeTo(futureInYearFlight.emissionsKg, 0.001),
+        );
+        expect(summary.yearToDateKg, closeTo(expectedYtd, 0.001));
+        expect(
+          summary.projectedEndYearKg,
+          closeTo(
+            summary.baselineYearlyKg + futureInYearFlight.emissionsKg,
+            0.001,
+          ),
+        );
+      },
+    );
   });
 
   group('PersistedAppState', () {
@@ -450,6 +492,9 @@ void main() {
       final repository = RemoteAppRepository(
         remoteClient: remoteClient,
         stateStore: _InMemoryAppStateStore(),
+        retryPolicy: const RemoteRetryPolicy(
+          retryDelays: [Duration.zero, Duration.zero],
+        ),
       );
 
       await repository.hydrate();
@@ -479,10 +524,87 @@ void main() {
 
       await repository.hydrate();
 
-      final auth = await repository.register('remote-fail@example.com', 'secure123');
+      final auth = await repository.register(
+        'remote-fail@example.com',
+        'secure123',
+      );
       expect(auth.status, equals(AuthActionStatus.unavailable));
       expect(repository.activeEmail, isNull);
       expect(repository.activeUser, isNull);
+    });
+
+    test(
+      'retries transient save failures and succeeds before exhausting policy',
+      () async {
+        final remoteClient = _FlakyRemoteStateClient(remainingSaveFailures: 2);
+        final repository = RemoteAppRepository(
+          remoteClient: remoteClient,
+          stateStore: _InMemoryAppStateStore(),
+          retryPolicy: const RemoteRetryPolicy(
+            retryDelays: [Duration.zero, Duration.zero],
+          ),
+        );
+
+        await repository.hydrate();
+        final auth = await repository.register(
+          'remote-retry@example.com',
+          'secure123',
+        );
+
+        expect(auth.status, equals(AuthActionStatus.authenticated));
+        expect(remoteClient.saveCalls, equals(3));
+        expect(repository.activeEmail, equals('remote-retry@example.com'));
+      },
+    );
+
+    test(
+      'returns unavailable when transient failure retries are exhausted',
+      () async {
+        final remoteClient = _FlakyRemoteStateClient(remainingSaveFailures: 3);
+        final repository = RemoteAppRepository(
+          remoteClient: remoteClient,
+          stateStore: _InMemoryAppStateStore(),
+          retryPolicy: const RemoteRetryPolicy(
+            retryDelays: [Duration.zero, Duration.zero],
+          ),
+        );
+
+        await repository.hydrate();
+        final auth = await repository.register(
+          'remote-retry-fail@example.com',
+          'secure123',
+        );
+
+        expect(auth.status, equals(AuthActionStatus.unavailable));
+        expect(remoteClient.saveCalls, equals(3));
+        expect(repository.activeEmail, isNull);
+        expect(repository.activeUser, isNull);
+      },
+    );
+
+    test('retries transient load failures during hydrate', () async {
+      final user = UserData.empty(
+        email: 'remote-load@example.com',
+      ).copyWith(onboardingComplete: true);
+      final remoteClient = _FlakyRemoteStateClient(
+        initialState: PersistedAppState(
+          credentials: const {'remote-load@example.com': 'secure123'},
+          users: {'remote-load@example.com': user},
+          activeEmail: 'remote-load@example.com',
+        ),
+        remainingLoadFailures: 1,
+      );
+      final repository = RemoteAppRepository(
+        remoteClient: remoteClient,
+        stateStore: _InMemoryAppStateStore(),
+        retryPolicy: const RemoteRetryPolicy(retryDelays: [Duration.zero]),
+      );
+
+      await repository.hydrate();
+
+      expect(remoteClient.loadCalls, equals(2));
+      expect(repository.activeEmail, equals('remote-load@example.com'));
+      expect(repository.activeUser?.onboardingComplete, isTrue);
     });
   });
 

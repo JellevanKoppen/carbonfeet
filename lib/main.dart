@@ -85,10 +85,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
 
     final activeEmail = _repository.activeEmail;
     if (activeEmail == null) {
-      return AuthScreen(
-        onSubmit: _handleAuth,
-        isSubmitting: _isAuthSubmitting,
-      );
+      return AuthScreen(onSubmit: _handleAuth, isSubmitting: _isAuthSubmitting);
     }
 
     final activeUser = _repository.activeUser;
@@ -100,10 +97,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
         _repository.logout();
         setState(() {});
       });
-      return AuthScreen(
-        onSubmit: _handleAuth,
-        isSubmitting: _isAuthSubmitting,
-      );
+      return AuthScreen(onSubmit: _handleAuth, isSubmitting: _isAuthSubmitting);
     }
 
     if (!activeUser.onboardingComplete) {
@@ -284,6 +278,10 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
 
+    await _submitFlightDraft(draft);
+  }
+
+  Future<void> _submitFlightDraft(FlightDraft draft) async {
     final result = await _runPostMutation(() => _repository.addFlight(draft));
     if (!mounted || result == null) {
       return;
@@ -321,12 +319,9 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
           ),
         );
       case AddFlightStatus.unavailable:
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Could not save flight right now. Please try again.',
-            ),
-          ),
+        _showPostRetrySnackBar(
+          message: 'Could not save flight right now. Please try again.',
+          onRetry: () => _submitFlightDraft(draft),
         );
     }
   }
@@ -341,9 +336,42 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
 
-    final result = await _runPostMutation(
-      () => _repository.updateCarProfile(updated),
+    await _submitCarProfile(updated);
+  }
+
+  Future<void> _submitCarProfile(CarProfile profile) async {
+    await _submitProfileMutation(
+      mutation: () => _repository.updateCarProfile(profile),
+      unavailableMessage:
+          'Could not update car profile right now. Please try again.',
+      onRetry: () => _submitCarProfile(profile),
     );
+  }
+
+  Future<void> _submitDietProfile(DietProfile profile) async {
+    await _submitProfileMutation(
+      mutation: () => _repository.updateDietProfile(profile),
+      unavailableMessage:
+          'Could not update diet profile right now. Please try again.',
+      onRetry: () => _submitDietProfile(profile),
+    );
+  }
+
+  Future<void> _submitEnergyProfile(EnergyProfile profile) async {
+    await _submitProfileMutation(
+      mutation: () => _repository.updateEnergyProfile(profile),
+      unavailableMessage:
+          'Could not update home energy right now. Please try again.',
+      onRetry: () => _submitEnergyProfile(profile),
+    );
+  }
+
+  Future<void> _submitProfileMutation({
+    required Future<MutationResult> Function() mutation,
+    required String unavailableMessage,
+    required Future<void> Function() onRetry,
+  }) async {
+    final result = await _runPostMutation(mutation);
     if (!mounted || result == null) {
       return;
     }
@@ -354,13 +382,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
     if (result.status == MutationStatus.unavailable) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Could not update car profile right now. Please try again.',
-          ),
-        ),
-      );
+      _showPostRetrySnackBar(message: unavailableMessage, onRetry: onRetry);
       return;
     }
 
@@ -377,30 +399,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
 
-    final result = await _runPostMutation(
-      () => _repository.updateDietProfile(updated),
-    );
-    if (!mounted || result == null) {
-      return;
-    }
-
-    if (result.status == MutationStatus.noActiveUser) {
-      _repository.logout();
-      setState(() {});
-      return;
-    }
-    if (result.status == MutationStatus.unavailable) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Could not update diet profile right now. Please try again.',
-          ),
-        ),
-      );
-      return;
-    }
-
-    setState(() {});
+    await _submitDietProfile(updated);
   }
 
   Future<void> _openEnergyDialog(UserData user) async {
@@ -414,30 +413,30 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
 
-    final result = await _runPostMutation(
-      () => _repository.updateEnergyProfile(updated),
-    );
-    if (!mounted || result == null) {
+    await _submitEnergyProfile(updated);
+  }
+
+  void _showPostRetrySnackBar({
+    required String message,
+    required Future<void> Function() onRetry,
+  }) {
+    if (!mounted) {
       return;
     }
 
-    if (result.status == MutationStatus.noActiveUser) {
-      _repository.logout();
-      setState(() {});
-      return;
-    }
-    if (result.status == MutationStatus.unavailable) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Could not update home energy right now. Please try again.',
-          ),
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(message),
+        action: SnackBarAction(
+          label: 'Retry',
+          onPressed: () {
+            unawaited(onRetry());
+          },
         ),
-      );
-      return;
-    }
-
-    setState(() {});
+      ),
+    );
   }
 
   void _updateActiveUser(UserData next) {

@@ -33,6 +33,31 @@ class _FailingSaveStateStore extends AppStateStore {
   }
 }
 
+class _FlakySaveStateStore extends AppStateStore {
+  _FlakySaveStateStore({
+    required this.state,
+    required this.saveDelay,
+    required this.remainingFailures,
+  });
+
+  PersistedAppState state;
+  final Duration saveDelay;
+  int remainingFailures;
+
+  @override
+  Future<PersistedAppState> load() async => state;
+
+  @override
+  Future<void> save(PersistedAppState next) async {
+    await Future<void>.delayed(saveDelay);
+    if (remainingFailures > 0) {
+      remainingFailures -= 1;
+      throw Exception('transient save failed');
+    }
+    state = next;
+  }
+}
+
 class _DelayedAuthRepository extends LocalAppRepository {
   _DelayedAuthRepository({required this.delay, required super.stateStore});
 
@@ -103,7 +128,10 @@ void main() {
     await tester.pumpWidget(MyApp(repository: repository));
     await tester.pumpAndSettle();
 
-    final beforeProjection = _metricValueForLabel(tester, 'End-of-year projection');
+    final beforeProjection = _metricValueForLabel(
+      tester,
+      'End-of-year projection',
+    );
 
     await _openPostDialog(tester, 'Car usage');
     await tester.enterText(find.byType(TextField).first, '8000');
@@ -124,6 +152,73 @@ void main() {
     expect(
       _metricValueForLabel(tester, 'End-of-year projection'),
       equals(beforeProjection),
+    );
+  });
+
+  testWidgets('post submission retry action succeeds after transient failure', (
+    WidgetTester tester,
+  ) async {
+    final user = UserData.empty(
+      email: 'post-retry@example.com',
+    ).copyWith(onboardingComplete: true);
+    const updatedCar = CarProfile(
+      vehicleKey: 'toyota_corolla',
+      distanceMode: DistanceMode.perYear,
+      distanceValue: 8000,
+    );
+    final expectedProjection = _asKgCo2e(
+      EmissionCalculator.summarize(
+        user.copyWith(carProfile: updatedCar),
+      ).projectedEndYearKg,
+    );
+    final state = PersistedAppState(
+      credentials: const {'post-retry@example.com': 'secure123'},
+      users: {'post-retry@example.com': user},
+      activeEmail: 'post-retry@example.com',
+    );
+    final repository = LocalAppRepository(
+      stateStore: _FlakySaveStateStore(
+        state: state,
+        saveDelay: const Duration(milliseconds: 160),
+        remainingFailures: 1,
+      ),
+    );
+
+    await tester.pumpWidget(MyApp(repository: repository));
+    await tester.pumpAndSettle();
+
+    final beforeProjection = _metricValueForLabel(
+      tester,
+      'End-of-year projection',
+    );
+
+    await _openPostDialog(tester, 'Car usage');
+    await tester.enterText(find.byType(TextField).first, '8000');
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Could not update car profile right now. Please try again.'),
+      findsOneWidget,
+    );
+    expect(find.text('Retry'), findsOneWidget);
+    expect(
+      _metricValueForLabel(tester, 'End-of-year projection'),
+      equals(beforeProjection),
+    );
+
+    await tester.tap(find.text('Retry'));
+    await tester.pump(const Duration(milliseconds: 30));
+
+    final submittingIndicator = find.byWidgetPredicate(
+      (widget) => widget is LinearProgressIndicator && widget.value == null,
+    );
+    expect(submittingIndicator, findsOneWidget);
+
+    await tester.pumpAndSettle();
+    expect(
+      _metricValueForLabel(tester, 'End-of-year projection'),
+      equals(expectedProjection),
     );
   });
 }
@@ -162,3 +257,5 @@ String _metricValueForLabel(WidgetTester tester, String label) {
 
   fail('Could not find metric value for label "$label".');
 }
+
+String _asKgCo2e(double value) => '${value.toStringAsFixed(0)} kg CO2e';

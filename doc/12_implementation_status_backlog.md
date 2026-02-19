@@ -15,31 +15,28 @@ After each meaningful implementation change, agents should update this file with
 ## 0) Latest update (2026-02-19)
 
 ### Implemented in this iteration
-- Refactored repository contracts to async result-based operations for auth and post submissions in `lib/data/repositories/app_repository.dart`.
-- Added backend-ready remote implementation path:
-  - `RemoteAppRepository` with local cache + remote commit/rollback behavior.
-  - `RemoteStateClient` abstraction and `SimulatedRemoteStateClient` for integration scaffolding.
-  - unavailable/error statuses for auth and post mutations.
-- Wired async loading/error UX through shell and key flows:
-  - `AuthScreen` now shows submitting state, disables inputs, and handles async submit.
-  - dashboard action locking + app-bar progress indicator while post mutations are in-flight.
-  - failure snackbars for car/diet/energy/flight post submission failures.
-- Added widget and unit coverage for async/backend seams:
-  - new async submission widget tests in `test/async_submission_states_test.dart`.
-  - repository tests updated to async status-based assertions.
-  - remote repository behavior tests added in `test/emission_calculator_test.dart`.
+- Added transient remote retry support in `RemoteAppRepository`:
+  - introduced `RemoteRetryPolicy` (configurable retry delays / max attempts).
+  - applied retry/backoff flow to remote `load` and `save` operations for `RemoteStateUnavailable`.
+  - preserved rollback semantics when retries are exhausted.
+- Added user-facing retry actions for post submission outages:
+  - flight/car/diet/energy unavailable snackbars now include a `Retry` action.
+  - retry action re-runs the same mutation payload without requiring users to re-enter form data.
+- Expanded test coverage for retry resilience:
+  - remote repository tests now cover retry-then-success and retry-exhausted outcomes.
+  - hydrate flow now has transient remote load retry coverage.
+  - async widget tests now cover snackbar `Retry` action recovering from a transient failed save.
 - Verified local quality gates with successful `flutter analyze` and `flutter test`.
 
 ### Priority and scope changes
-- CF-P0-03 moved to done with implemented remote repository path (simulated remote client + local cache sync).
-- CF-P0-09 moved to done for async loading/error handling on backend-style form submissions.
-- TEST-10 moved to done (async auth/post submission-state widgets).
-- TEST-11 moved to done (remote repository success/failure behavior).
-- Slice A now centers on replacing simulated remote state with production API integration and robust retry/session handling.
+- CF-P0-10 moved to done for transient retry/backoff and in-app retry CTA behavior.
+- TEST-11 scope expanded to include retry-path repository validation.
+- TEST-10 scope expanded to include post mutation retry-action UX.
+- Slice A now centers on production API client integration and secure auth/session lifecycle.
 
 ### Remaining open focus
 - Replace simulated remote repository client with production API-backed implementation.
-- Add secure remote auth/session token handling and retry policy for transient failures.
+- Add secure remote auth/session token handling (token lifecycle, restore, expiry).
 
 ## 1) Current implementation status
 
@@ -89,7 +86,7 @@ After each meaningful implementation change, agents should update this file with
 | Onboarding validation | Implemented (inline) | Car and energy ranges validated with field-level inline errors |
 | Flight dialog validation | Implemented (inline) | Flight number/date validation shown inline in flight dialog |
 | Duplicate flight protection | Implemented | Blocks same flight number on same date |
-| Async submission loading/error handling | Implemented | Auth and post submissions now expose in-flight UI and explicit failure feedback for unavailable backend paths |
+| Async submission loading/error handling | Implemented | Auth/post submissions expose in-flight UI, explicit failure feedback, and retry actions for transient unavailable paths |
 | Dashboard data quality guards | Implemented | Loading/empty/error states added for dashboard sections with malformed-data protection |
 | Advanced edge-case handling | Partial | Plausibility rules improved, but not exhaustive yet |
 
@@ -104,8 +101,8 @@ After each meaningful implementation change, agents should update this file with
 | Core widget smoke test | Implemented | Register flow reaches onboarding |
 | Dashboard widget tests | Implemented | Recent flights detail drill-down plus loading/error guard-state coverage |
 | Post/simulator flow widget tests | Implemented | Flight known/unknown/duplicate flows, car/diet/energy post update flows, and simulator scenario/delta rendering are covered |
-| Async submission state widget tests | Implemented | Auth submit loading state + post submission failure loading/error feedback coverage |
-| Remote repository tests | Implemented | Remote repository success path and unavailable rollback behavior covered |
+| Async submission state widget tests | Implemented | Auth submit loading state + post submission failure/loading feedback + retry action recovery are covered |
+| Remote repository tests | Implemented | Remote repository success path, transient retry recovery, and retry-exhausted rollback behavior covered |
 | CI pipeline checks | Implemented | GitHub Actions runs analyze + test on push/PR |
 | Golden and integration tests | Not implemented | No visual regression or end-to-end suite yet |
 
@@ -115,7 +112,6 @@ After each meaningful implementation change, agents should update this file with
 |---|---|---|
 | Replace simulated remote state client with production API client | Remote-ready repository exists, but production backend integration is still missing | P0 |
 | Add secure remote auth/session strategy | Required for production-grade remote login lifecycle and credential safety | P0 |
-| Add retry/backoff policy for transient remote failures | Needed for resilience and fewer user-facing transient errors | P0 |
 | Flight provider abstraction (mock + real path) | Needed to move beyond hardcoded catalog | P1 |
 | Richer dashboard analytics UX (tooltips/legends/tap states) | Improves usability and clarity | P1 |
 | Achievement system redesign (event-driven) | Current heuristics are simplistic | P1 |
@@ -139,6 +135,7 @@ After each meaningful implementation change, agents should update this file with
 | CF-P0-07 | CI pipeline setup | ✅ Done: GitHub Actions workflow runs `flutter analyze` + `flutter test` on push/PR |
 | CF-P0-08 | Regression-focused test expansion | ✅ Done: projection boundaries, flight/simulator flows, and car/diet/energy post widget-flow coverage completed |
 | CF-P0-09 | Async backend submission UX | ✅ Done: auth and post submissions now show in-flight UI, disable conflicting actions, and surface unavailable-path errors |
+| CF-P0-10 | Remote retry resilience | ✅ Done: retry/backoff policy for transient remote failures + post-level retry actions with coverage for success-after-retry and rollback-on-exhaustion |
 
 ## P1: Product depth and user value
 
@@ -193,7 +190,7 @@ After each meaningful implementation change, agents should update this file with
 ### Slice A (highest urgency)
 1. Integrate production API-backed `RemoteStateClient` implementation and wire environment configuration.
 2. Add secure remote session/token lifecycle for auth (login, restore, expiry handling).
-3. Add retry/backoff + user retry actions for transient remote failures.
+3. Add explicit unauthorized/session-expired handling path (forced logout + re-auth prompt) on remote auth failures.
 
 ### Slice B
 1. Implement flight provider abstraction and history management (CF-P1-01, CF-P1-02, CF-P1-03).
