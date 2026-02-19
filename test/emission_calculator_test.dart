@@ -2,6 +2,20 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:carbonfeet/main.dart';
 
+class _InMemoryAppStateStore extends AppStateStore {
+  _InMemoryAppStateStore() : state = const PersistedAppState.empty();
+
+  PersistedAppState state;
+
+  @override
+  Future<PersistedAppState> load() async => state;
+
+  @override
+  Future<void> save(PersistedAppState next) async {
+    state = next;
+  }
+}
+
 void main() {
   group('EmissionCalculator', () {
     test('summarize computes baseline, ytd, and projection with flights', () {
@@ -176,6 +190,103 @@ void main() {
       expect(hydrated.activeEmail, equals('legacy@example.com'));
       expect(hydrated.users['legacy@example.com']!.onboardingComplete, isTrue);
     });
+  });
+
+  group('LocalAppRepository', () {
+    test('addFlight returns unknown for flights outside catalog', () async {
+      final repository = LocalAppRepository(
+        stateStore: _InMemoryAppStateStore(),
+      );
+      await repository.hydrate();
+      expect(repository.register('repo@example.com', 'secure123'), isTrue);
+
+      final result = repository.addFlight(
+        FlightDraft(
+          flightNumber: 'AA9999',
+          date: DateTime(2026, 6, 1),
+          occupancy: OccupancyLevel.halfFull,
+        ),
+      );
+
+      expect(result.status, equals(AddFlightStatus.unknownFlight));
+      expect(repository.activeUser!.flights, isEmpty);
+    });
+
+    test('addFlight prevents duplicate same-day entries', () async {
+      final repository = LocalAppRepository(
+        stateStore: _InMemoryAppStateStore(),
+      );
+      await repository.hydrate();
+      expect(repository.register('repo@example.com', 'secure123'), isTrue);
+
+      final first = repository.addFlight(
+        FlightDraft(
+          flightNumber: 'KL1001',
+          date: DateTime(2026, 6, 1),
+          occupancy: OccupancyLevel.halfFull,
+        ),
+      );
+      final second = repository.addFlight(
+        FlightDraft(
+          flightNumber: 'KL1001',
+          date: DateTime(2026, 6, 1),
+          occupancy: OccupancyLevel.nearlyEmpty,
+        ),
+      );
+
+      expect(first.status, equals(AddFlightStatus.added));
+      expect(first.entry, isNotNull);
+      expect(second.status, equals(AddFlightStatus.duplicateForDate));
+
+      final user = repository.activeUser!;
+      expect(user.flights.length, equals(1));
+      expect(
+        user.activityLog.where((event) => event.type == 'flight').length,
+        1,
+      );
+    });
+
+    test(
+      'profile updates mutate active user and append activity events',
+      () async {
+        final repository = LocalAppRepository(
+          stateStore: _InMemoryAppStateStore(),
+        );
+        await repository.hydrate();
+        expect(repository.register('repo@example.com', 'secure123'), isTrue);
+
+        final carUpdated = repository.updateCarProfile(
+          const CarProfile(
+            vehicleKey: 'tesla_model_3',
+            distanceMode: DistanceMode.perYear,
+            distanceValue: 9000,
+          ),
+        );
+        final dietUpdated = repository.updateDietProfile(
+          const DietProfile(meatDaysPerWeek: 1, dairyLevel: DairyLevel.low),
+        );
+        final energyUpdated = repository.updateEnergyProfile(
+          const EnergyProfile(
+            electricityKwh: 2800,
+            gasM3: 300,
+            isEstimated: false,
+          ),
+        );
+
+        expect(carUpdated, isTrue);
+        expect(dietUpdated, isTrue);
+        expect(energyUpdated, isTrue);
+
+        final user = repository.activeUser!;
+        expect(user.carProfile.vehicleKey, equals('tesla_model_3'));
+        expect(user.dietProfile.meatDaysPerWeek, equals(1));
+        expect(user.energyProfile.gasM3, equals(300));
+        expect(
+          user.activityLog.map((event) => event.type),
+          containsAll(['car_update', 'diet_update', 'energy_update']),
+        );
+      },
+    );
   });
 
   group('InputValidation', () {

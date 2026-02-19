@@ -12,6 +12,21 @@ After each meaningful implementation change, agents should update this file with
 2. What changed in priority or scope.
 3. What remains open in the backlog.
 
+## 0) Latest update (2026-02-19)
+
+### Implemented in this iteration
+- Expanded `AppRepository` to own emissions/post mutations (`addFlight`, `updateCarProfile`, `updateDietProfile`, `updateEnergyProfile`).
+- Moved flight lookup + duplicate protection and post activity logging from app shell UI into repository operations.
+- Added repository unit tests for unknown flight rejection, duplicate flight protection, and profile update activity logging.
+
+### Priority and scope changes
+- CF-P0-02 moved from in-progress to done for the local seam.
+- Slice A now shifts to CI hardening and dashboard/error-state guards.
+
+### Remaining open focus
+- Backend/remote implementations for repository seams are still not in place.
+- CI (`flutter analyze` + `flutter test`) and broader regression coverage remain open.
+
 ## 1) Current implementation status
 
 ### 1.1 Product flows currently implemented
@@ -49,6 +64,7 @@ After each meaningful implementation change, agents should update this file with
 | Offline conflict strategy | Not implemented | No sync model exists yet |
 | State architecture | Implemented (phase 1) | Code split into `lib/features/*`, `lib/domain/*`, `lib/data/*`; `main.dart` acts as app shell |
 | Auth/user repository seam | Implemented (local) | `AppRepository` interface + `LocalAppRepository` abstraction now used by UI shell |
+| Emissions/post repository seam | Implemented (local) | Flight/car/diet/energy post mutations now go through repository operations instead of direct UI state mutation |
 | Persistence schema versioning | Implemented | Persisted payload includes `schemaVersion` with migration path for legacy payloads |
 
 ### 1.4 UX validation and safeguards status
@@ -68,6 +84,7 @@ After each meaningful implementation change, agents should update this file with
 | Emission calculator unit tests | Implemented | Baseline/projection, occupancy effects, simulator |
 | Persistence unit tests | Implemented | Persisted state round-trip coverage |
 | Validation unit tests | Implemented | Password, car, energy, flight number/date validation |
+| Local repository unit tests | Implemented | Covers unknown/duplicate flight outcomes and profile update activity logging |
 | Core widget smoke test | Implemented | Register flow reaches onboarding |
 | Dashboard recent flight widget test | Implemented | Recent flight list + flight detail sheet |
 | Golden and integration tests | Not implemented | No visual regression or end-to-end suite yet |
@@ -76,8 +93,8 @@ After each meaningful implementation change, agents should update this file with
 
 | Gap | Impact | Priority |
 |---|---|---|
-| Expand repository architecture beyond auth/user shell | Needed to decouple emissions and flights from UI for backend integration | P0 |
 | Add remote/backend auth repository implementation | Local seam exists, but production auth implementation is still missing | P0 |
+| Add remote/backend implementation for emissions/post repository seam | Local mutation seam exists, but production data path is still missing | P0 |
 | Add CI checks (analyze/test) | Prevents regressions from reaching main | P0 |
 | Expand validation and error states for all forms and async flows | Prevents silent failures and poor UX | P0 |
 | Flight provider abstraction (mock + real path) | Needed to move beyond hardcoded catalog | P1 |
@@ -95,7 +112,7 @@ After each meaningful implementation change, agents should update this file with
 | ID | Task | Deliverable / Acceptance criteria |
 |---|---|---|
 | CF-P0-01 | Modularize codebase | ✅ Done: code moved into `lib/features/*`, `lib/domain/*`, and `lib/data/*` (part-based modules) with app-shell composition in `main.dart` |
-| CF-P0-02 | Introduce app state + repositories | In progress: `AppRepository` introduced for auth/user state; emissions/flights abstraction still open |
+| CF-P0-02 | Introduce app state + repositories | ✅ Done (local seam): repository now owns auth/user plus flight and profile post mutations; backend implementations remain open |
 | CF-P0-03 | Backend-ready auth seam | ✅ Done (local seam): UI depends on repository interface; backend implementation still to be added |
 | CF-P0-04 | Harden persistence versioning | ✅ Done: persisted schema version + migration path for legacy payload |
 | CF-P0-05 | Form error-state consistency | All dialogs/forms show inline field errors and prevent invalid submit consistently |
@@ -151,9 +168,9 @@ After each meaningful implementation change, agents should update this file with
 ## 5) Suggested execution plan (next 3 delivery slices)
 
 ### Slice A (highest urgency)
-1. Complete repository coverage for emissions and flights (remaining CF-P0-02 scope).
-2. Add CI pipeline and regression test expansion (CF-P0-07, CF-P0-08).
-3. Standardize all error/empty/loading states (CF-P0-05, CF-P0-06).
+1. Add CI pipeline and regression test expansion (CF-P0-07, CF-P0-08).
+2. Standardize all error/empty/loading states (CF-P0-05, CF-P0-06).
+3. Add backend-ready implementations for the repository seams (auth + emissions/posts).
 
 ### Slice B
 1. Implement flight provider abstraction and history management (CF-P1-01, CF-P1-02, CF-P1-03).

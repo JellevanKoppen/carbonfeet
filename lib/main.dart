@@ -208,7 +208,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
 
     switch (selected) {
       case PostType.flight:
-        await _openFlightDialog(user);
+        await _openFlightDialog();
       case PostType.car:
         await _openCarDialog(user);
       case PostType.diet:
@@ -218,7 +218,7 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
     }
   }
 
-  Future<void> _openFlightDialog(UserData user) async {
+  Future<void> _openFlightDialog() async {
     final draft = await showDialog<FlightDraft>(
       context: context,
       builder: (context) => const AddFlightDialog(),
@@ -228,47 +228,39 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       return;
     }
 
-    final entry = EmissionCalculator.buildFlightEntry(draft);
-    if (entry == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Flight not found. MVP only accepts known flight numbers.',
+    final result = _repository.addFlight(draft);
+    switch (result.status) {
+      case AddFlightStatus.unknownFlight:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Flight not found. MVP only accepts known flight numbers.',
+            ),
           ),
-        ),
-      );
-      return;
+        );
+      case AddFlightStatus.duplicateForDate:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('This flight is already logged for that date.'),
+          ),
+        );
+      case AddFlightStatus.noActiveUser:
+        _repository.logout();
+        setState(() {});
+      case AddFlightStatus.added:
+        final entry = result.entry;
+        if (entry == null) {
+          return;
+        }
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${entry.flightNumber} added (${_formatNumber(entry.emissionsKg)} kg CO2e).',
+            ),
+          ),
+        );
     }
-
-    final hasDuplicate = user.flights.any(
-      (flight) =>
-          flight.flightNumber == entry.flightNumber &&
-          _isSameCalendarDate(flight.date, entry.date),
-    );
-
-    if (hasDuplicate) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('This flight is already logged for that date.'),
-        ),
-      );
-      return;
-    }
-
-    _updateActiveUser(
-      user.copyWith(
-        flights: [...user.flights, entry],
-        activityLog: [...user.activityLog, ActivityEvent.atNow('flight')],
-      ),
-    );
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '${entry.flightNumber} added (${_formatNumber(entry.emissionsKg)} kg CO2e).',
-        ),
-      ),
-    );
   }
 
   Future<void> _openCarDialog(UserData user) async {
@@ -277,16 +269,15 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       builder: (context) => EditCarDialog(initial: user.carProfile),
     );
 
-    if (updated == null) {
+    if (!mounted || updated == null) {
       return;
     }
 
-    _updateActiveUser(
-      user.copyWith(
-        carProfile: updated,
-        activityLog: [...user.activityLog, ActivityEvent.atNow('car_update')],
-      ),
-    );
+    final didUpdate = _repository.updateCarProfile(updated);
+    if (!didUpdate) {
+      _repository.logout();
+    }
+    setState(() {});
   }
 
   Future<void> _openDietDialog(UserData user) async {
@@ -295,16 +286,15 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
       builder: (context) => EditDietDialog(initial: user.dietProfile),
     );
 
-    if (updated == null) {
+    if (!mounted || updated == null) {
       return;
     }
 
-    _updateActiveUser(
-      user.copyWith(
-        dietProfile: updated,
-        activityLog: [...user.activityLog, ActivityEvent.atNow('diet_update')],
-      ),
-    );
+    final didUpdate = _repository.updateDietProfile(updated);
+    if (!didUpdate) {
+      _repository.logout();
+    }
+    setState(() {});
   }
 
   Future<void> _openEnergyDialog(UserData user) async {
@@ -314,19 +304,15 @@ class _CarbonFeetShellState extends State<CarbonFeetShell> {
           EditEnergyDialog(initial: user.energyProfile, country: user.country),
     );
 
-    if (updated == null) {
+    if (!mounted || updated == null) {
       return;
     }
 
-    _updateActiveUser(
-      user.copyWith(
-        energyProfile: updated,
-        activityLog: [
-          ...user.activityLog,
-          ActivityEvent.atNow('energy_update'),
-        ],
-      ),
-    );
+    final didUpdate = _repository.updateEnergyProfile(updated);
+    if (!didUpdate) {
+      _repository.logout();
+    }
+    setState(() {});
   }
 
   void _updateActiveUser(UserData next) {
