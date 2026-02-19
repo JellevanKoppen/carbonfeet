@@ -155,6 +155,27 @@ void main() {
         equals('flight'),
       );
     });
+
+    test('migrates legacy payloads without schemaVersion', () {
+      final legacyUser = UserData.empty(
+        email: 'legacy@example.com',
+      ).copyWith(onboardingComplete: true);
+      final legacyPayload = <String, dynamic>{
+        'credentials': {'legacy@example.com': 'secure123'},
+        'users': {'legacy@example.com': legacyUser.toJson()},
+        'activeEmail': 'legacy@example.com',
+      };
+
+      final hydrated = PersistedAppState.fromJson(legacyPayload);
+
+      expect(
+        hydrated.schemaVersion,
+        equals(PersistedAppState.currentSchemaVersion),
+      );
+      expect(hydrated.credentials['legacy@example.com'], equals('secure123'));
+      expect(hydrated.activeEmail, equals('legacy@example.com'));
+      expect(hydrated.users['legacy@example.com']!.onboardingComplete, isTrue);
+    });
   });
 
   group('InputValidation', () {
