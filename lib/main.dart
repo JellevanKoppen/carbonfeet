@@ -35,6 +35,14 @@ const String _remoteStateToken = String.fromEnvironment(
   'CARBONFEET_REMOTE_STATE_TOKEN',
   defaultValue: '',
 );
+const String _remoteApiVersion = String.fromEnvironment(
+  'CARBONFEET_REMOTE_API_VERSION',
+  defaultValue: '',
+);
+const bool _remoteUseEnvelope = bool.fromEnvironment(
+  'CARBONFEET_REMOTE_USE_ENVELOPE',
+  defaultValue: false,
+);
 
 AppRepository createDefaultRepository() {
   if (!_useRemoteRepository) {
@@ -51,8 +59,13 @@ AppRepository createDefaultRepository() {
       baseUrl: baseUrl,
       statePath: _remoteStatePath,
       authToken: _remoteStateToken,
+      apiVersion: _remoteApiVersion,
+      useStateEnvelope: _remoteUseEnvelope,
     );
-    return RemoteAppRepository(remoteClient: remoteClient);
+    return RemoteAppRepository(
+      remoteClient: remoteClient,
+      remoteSessionStore: const SharedPreferencesRemoteSessionStore(),
+    );
   } on FormatException {
     return LocalAppRepository();
   }

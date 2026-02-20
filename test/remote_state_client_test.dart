@@ -216,6 +216,107 @@ void main() {
     },
   );
 
+  test(
+    'http remote client load supports envelope and rotates session token',
+    () async {
+      final authHeaders = <String?>[];
+      final transport = _RecordingTransport(
+        handler:
+            ({
+              required method,
+              required url,
+              required headers,
+              body,
+              required timeout,
+            }) async {
+              authHeaders.add(headers['Authorization']);
+
+              if (method == 'GET') {
+                return RemoteHttpResponse(
+                  statusCode: 200,
+                  body: jsonEncode({
+                    'state': const PersistedAppState(
+                      credentials: {'envelope@example.com': 'secure123'},
+                      users: {},
+                      activeEmail: 'envelope@example.com',
+                    ).toJson(),
+                    'session': {
+                      'accessToken': 'rotated-token-456',
+                      'expiresAt': '2035-01-01T00:00:00Z',
+                    },
+                  }),
+                );
+              }
+
+              return const RemoteHttpResponse(statusCode: 204, body: '');
+            },
+      );
+      final client = HttpRemoteStateClient(
+        baseUrl: 'https://api.example.com/',
+        authToken: 'initial-token-123',
+        transport: transport,
+      );
+
+      final loaded = await client.load();
+      await client.save(const PersistedAppState.empty());
+
+      expect(loaded.activeEmail, equals('envelope@example.com'));
+      expect(
+        authHeaders,
+        equals(['Bearer initial-token-123', 'Bearer rotated-token-456']),
+      );
+      expect(client.session?.accessToken, equals('rotated-token-456'));
+    },
+  );
+
+  test(
+    'http remote client save supports envelope payload and api version header',
+    () async {
+      final transport = _RecordingTransport(
+        handler:
+            ({
+              required method,
+              required url,
+              required headers,
+              body,
+              required timeout,
+            }) async {
+              return const RemoteHttpResponse(
+                statusCode: 200,
+                body: '',
+                headers: {'x-carbonfeet-access-token': 'next-token-789'},
+              );
+            },
+      );
+      final client = HttpRemoteStateClient(
+        baseUrl: 'https://api.example.com/',
+        apiVersion: '2026-02',
+        useStateEnvelope: true,
+        transport: transport,
+      );
+
+      await client.save(
+        const PersistedAppState(
+          credentials: {'save-envelope@example.com': 'secure123'},
+          users: {},
+          activeEmail: 'save-envelope@example.com',
+        ),
+      );
+
+      expect(
+        transport.lastHeaders['x-carbonfeet-api-version'],
+        equals('2026-02'),
+      );
+      final decoded = jsonDecode(transport.lastBody!) as Map<String, dynamic>;
+      expect(decoded.containsKey('state'), isTrue);
+      expect(
+        (decoded['state'] as Map<String, dynamic>)['activeEmail'],
+        equals('save-envelope@example.com'),
+      );
+      expect(client.session?.accessToken, equals('next-token-789'));
+    },
+  );
+
   test('http remote client save maps unauthorized to session error', () async {
     final transport = _RecordingTransport(
       handler:

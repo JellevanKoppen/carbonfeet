@@ -26,9 +26,18 @@ flutter run \
   --dart-define=CARBONFEET_USE_REMOTE_STATE=true \
   --dart-define=CARBONFEET_REMOTE_BASE_URL=https://api.example.com/v1/ \
   --dart-define=CARBONFEET_REMOTE_STATE_PATH=state \
-  --dart-define=CARBONFEET_REMOTE_STATE_TOKEN=your-token
+  --dart-define=CARBONFEET_REMOTE_STATE_TOKEN=your-token \
+  --dart-define=CARBONFEET_REMOTE_API_VERSION=2026-02 \
+  --dart-define=CARBONFEET_REMOTE_USE_ENVELOPE=true
 ```
 
 Notes:
 - If remote mode is enabled but `CARBONFEET_REMOTE_BASE_URL` is empty/invalid, the app falls back to local repository mode.
-- Remote client expects `GET` and `PUT` on the configured state path with JSON payloads compatible with `PersistedAppState`.
+- `CARBONFEET_REMOTE_API_VERSION` is optional; when set, the app sends `x-carbonfeet-api-version` on remote requests.
+- `CARBONFEET_REMOTE_USE_ENVELOPE=true` makes `PUT` payloads use `{ "state": ... }` instead of sending raw state JSON.
+- `GET` accepts both payload shapes:
+  - raw `PersistedAppState` JSON
+  - envelope JSON with `{ "state": ..., "session": ... }`
+- Remote session tokens are restored and persisted locally through `SharedPreferencesRemoteSessionStore` and can rotate via:
+  - response body `session.accessToken`/`session.expiresAt`
+  - response headers `x-carbonfeet-access-token` (or `x-carbonfeet-session-token`) + `x-carbonfeet-session-expires-at`

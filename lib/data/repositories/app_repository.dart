@@ -342,6 +342,105 @@ abstract interface class RemoteStateClient {
   Future<void> save(PersistedAppState state);
 }
 
+class RemoteSession {
+  const RemoteSession({
+    required this.accessToken,
+    this.refreshToken,
+    this.expiresAt,
+  });
+
+  factory RemoteSession.fromJson(Map<String, dynamic> json) {
+    final accessToken = _readString(json['accessToken']).trim();
+    if (accessToken.isEmpty) {
+      throw const FormatException('Missing access token.');
+    }
+
+    final refreshToken = _readString(json['refreshToken']).trim();
+    final expiresAtRaw = _readString(json['expiresAt']).trim();
+
+    return RemoteSession(
+      accessToken: accessToken,
+      refreshToken: refreshToken.isEmpty ? null : refreshToken,
+      expiresAt: expiresAtRaw.isEmpty ? null : DateTime.tryParse(expiresAtRaw),
+    );
+  }
+
+  final String accessToken;
+  final String? refreshToken;
+  final DateTime? expiresAt;
+
+  bool isExpired({DateTime? now}) {
+    final expiresAt = this.expiresAt;
+    if (expiresAt == null) {
+      return false;
+    }
+    final reference = (now ?? DateTime.now()).toUtc();
+    return !expiresAt.toUtc().isAfter(reference);
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'accessToken': accessToken,
+      'refreshToken': refreshToken,
+      'expiresAt': expiresAt?.toUtc().toIso8601String(),
+    };
+  }
+}
+
+abstract interface class RemoteSessionStore {
+  Future<RemoteSession?> load();
+  Future<void> save(RemoteSession? session);
+}
+
+class NoopRemoteSessionStore implements RemoteSessionStore {
+  const NoopRemoteSessionStore();
+
+  @override
+  Future<RemoteSession?> load() async => null;
+
+  @override
+  Future<void> save(RemoteSession? session) async {}
+}
+
+class SharedPreferencesRemoteSessionStore implements RemoteSessionStore {
+  const SharedPreferencesRemoteSessionStore();
+
+  static const String _storageKey = 'carbonfeet_remote_session_v1';
+
+  @override
+  Future<RemoteSession?> load() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_storageKey);
+      if (raw == null || raw.isEmpty) {
+        return null;
+      }
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        return null;
+      }
+      return RemoteSession.fromJson(_asStringDynamicMap(decoded));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> save(RemoteSession? session) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (session == null) {
+      await prefs.remove(_storageKey);
+      return;
+    }
+    await prefs.setString(_storageKey, jsonEncode(session.toJson()));
+  }
+}
+
+abstract interface class RemoteSessionAwareClient {
+  RemoteSession? get session;
+  set session(RemoteSession? value);
+}
+
 class RemoteStateUnavailable implements Exception {
   const RemoteStateUnavailable([
     this.message = 'Remote state service is unavailable.',
@@ -378,10 +477,15 @@ class RemoteStateRequestFailed implements Exception {
 }
 
 class RemoteHttpResponse {
-  const RemoteHttpResponse({required this.statusCode, required this.body});
+  const RemoteHttpResponse({
+    required this.statusCode,
+    required this.body,
+    this.headers = const {},
+  });
 
   final int statusCode;
   final String body;
+  final Map<String, String> headers;
 }
 
 abstract interface class RemoteHttpTransport {
@@ -417,10 +521,18 @@ class IoRemoteHttpTransport implements RemoteHttpTransport {
 
       final response = await request.close().timeout(timeout);
       final responseBody = await utf8.decodeStream(response).timeout(timeout);
+      final responseHeaders = <String, String>{};
+      response.headers.forEach((name, values) {
+        if (values.isEmpty) {
+          return;
+        }
+        responseHeaders[name.toLowerCase()] = values.join(',');
+      });
 
       return RemoteHttpResponse(
         statusCode: response.statusCode,
         body: responseBody,
+        headers: responseHeaders,
       );
     } on TimeoutException {
       throw const RemoteStateUnavailable('Remote state request timed out.');
@@ -438,23 +550,43 @@ class IoRemoteHttpTransport implements RemoteHttpTransport {
   }
 }
 
-class HttpRemoteStateClient implements RemoteStateClient {
+class HttpRemoteStateClient
+    implements RemoteStateClient, RemoteSessionAwareClient {
   HttpRemoteStateClient({
     required String baseUrl,
     String statePath = 'state',
     String? authToken,
+    String? apiVersion,
+    this.useStateEnvelope = false,
     RemoteHttpTransport? transport,
     this.timeout = const Duration(seconds: 8),
   }) : _baseUri = Uri.parse(baseUrl),
        _statePath = _normalizeStatePath(statePath),
-       _authToken = _normalizeAuthToken(authToken),
+       _apiVersion = _normalizeApiVersion(apiVersion),
+       session = _initialSession(authToken),
        _transport = transport ?? const IoRemoteHttpTransport();
 
   final Uri _baseUri;
   final String _statePath;
-  final String? _authToken;
+  final String? _apiVersion;
+  @override
+  RemoteSession? session;
+  final bool useStateEnvelope;
   final RemoteHttpTransport _transport;
   final Duration timeout;
+
+  static const String _accessTokenHeader = 'x-carbonfeet-access-token';
+  static const String _sessionTokenHeader = 'x-carbonfeet-session-token';
+  static const String _sessionExpiryHeader = 'x-carbonfeet-session-expires-at';
+  static const String _apiVersionHeader = 'x-carbonfeet-api-version';
+
+  static RemoteSession? _initialSession(String? authToken) {
+    final normalized = _normalizeAuthToken(authToken);
+    if (normalized == null) {
+      return null;
+    }
+    return RemoteSession(accessToken: normalized);
+  }
 
   @override
   Future<PersistedAppState> load() async {
@@ -469,6 +601,7 @@ class HttpRemoteStateClient implements RemoteStateClient {
       return const PersistedAppState.empty();
     }
     if (_isUnauthorizedStatusCode(response.statusCode)) {
+      session = null;
       throw const RemoteStateUnauthorized();
     }
     if (_isTransientStatusCode(response.statusCode)) {
@@ -489,7 +622,13 @@ class HttpRemoteStateClient implements RemoteStateClient {
       if (decoded is! Map) {
         throw const FormatException('Expected JSON object.');
       }
-      return PersistedAppState.fromJson(_asStringDynamicMap(decoded));
+      final payload = _asStringDynamicMap(decoded);
+      _syncSessionFromResponse(response, payload: payload);
+
+      final statePayload = payload.containsKey('state')
+          ? _asStringDynamicMap(payload['state'])
+          : payload;
+      return PersistedAppState.fromJson(statePayload);
     } catch (_) {
       throw const RemoteStateUnavailable('Remote state payload is invalid.');
     }
@@ -501,11 +640,12 @@ class HttpRemoteStateClient implements RemoteStateClient {
       method: 'PUT',
       url: _stateUri,
       headers: _headers,
-      body: jsonEncode(state.toJson()),
+      body: jsonEncode(_buildSavePayload(state)),
       timeout: timeout,
     );
 
     if (_isUnauthorizedStatusCode(response.statusCode)) {
+      session = null;
       throw const RemoteStateUnauthorized();
     }
     if (_isTransientStatusCode(response.statusCode)) {
@@ -517,6 +657,22 @@ class HttpRemoteStateClient implements RemoteStateClient {
         message: 'Failed to save remote state.',
       );
     }
+
+    if (response.body.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map) {
+          _syncSessionFromResponse(
+            response,
+            payload: _asStringDynamicMap(decoded),
+          );
+          return;
+        }
+      } catch (_) {
+        // Ignore body parse failures for save responses.
+      }
+    }
+    _syncSessionFromResponse(response);
   }
 
   Uri get _stateUri => _baseUri.resolve(_statePath);
@@ -526,11 +682,27 @@ class HttpRemoteStateClient implements RemoteStateClient {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
     };
-    final authToken = _authToken;
+    final authToken = _currentAccessToken;
     if (authToken != null) {
       headers['Authorization'] = 'Bearer $authToken';
     }
+    final apiVersion = _apiVersion;
+    if (apiVersion != null) {
+      headers[_apiVersionHeader] = apiVersion;
+    }
     return headers;
+  }
+
+  String? get _currentAccessToken {
+    final current = session;
+    if (current == null) {
+      return null;
+    }
+    if (current.isExpired()) {
+      session = null;
+      return null;
+    }
+    return current.accessToken;
   }
 
   bool _isSuccessStatusCode(int statusCode) =>
@@ -542,6 +714,88 @@ class HttpRemoteStateClient implements RemoteStateClient {
   bool _isTransientStatusCode(int statusCode) =>
       statusCode == 408 || statusCode == 429 || statusCode >= 500;
 
+  Object _buildSavePayload(PersistedAppState state) {
+    if (useStateEnvelope) {
+      return {'state': state.toJson()};
+    }
+    return state.toJson();
+  }
+
+  void _syncSessionFromResponse(
+    RemoteHttpResponse response, {
+    Map<String, dynamic>? payload,
+  }) {
+    if (payload != null && payload.containsKey('session')) {
+      session = _sessionFromPayload(payload);
+      return;
+    }
+
+    final headers = _lowercaseHeaders(response.headers);
+    final accessToken =
+        headers[_accessTokenHeader] ?? headers[_sessionTokenHeader];
+    final normalizedAccessToken = _normalizeAuthToken(accessToken);
+    if (normalizedAccessToken == null) {
+      return;
+    }
+    session = RemoteSession(
+      accessToken: normalizedAccessToken,
+      refreshToken: session?.refreshToken,
+      expiresAt: _parseExpiresAt(headers[_sessionExpiryHeader]),
+    );
+  }
+
+  RemoteSession? _sessionFromPayload(Map<String, dynamic>? payload) {
+    if (payload == null || !payload.containsKey('session')) {
+      return null;
+    }
+    final rawSession = payload['session'];
+    if (rawSession == null) {
+      return null;
+    }
+    final sessionMap = _asStringDynamicMap(rawSession);
+    if (sessionMap.isEmpty) {
+      return null;
+    }
+    final accessToken = _normalizeAuthToken(
+      _readString(sessionMap['accessToken']),
+    );
+    if (accessToken == null) {
+      return null;
+    }
+    final refreshToken = _normalizeAuthToken(
+      _readString(sessionMap['refreshToken']),
+    );
+    final expiresAt = _parseExpiresAt(sessionMap['expiresAt']);
+    return RemoteSession(
+      accessToken: accessToken,
+      refreshToken: refreshToken,
+      expiresAt: expiresAt,
+    );
+  }
+
+  Map<String, String> _lowercaseHeaders(Map<String, String> headers) {
+    if (headers.isEmpty) {
+      return const {};
+    }
+    return {
+      for (final entry in headers.entries) entry.key.toLowerCase(): entry.value,
+    };
+  }
+
+  DateTime? _parseExpiresAt(Object? rawValue) {
+    if (rawValue == null) {
+      return null;
+    }
+    if (rawValue is String) {
+      final trimmed = rawValue.trim();
+      if (trimmed.isEmpty) {
+        return null;
+      }
+      return DateTime.tryParse(trimmed);
+    }
+    return null;
+  }
+
   static String _normalizeStatePath(String rawPath) {
     final trimmed = rawPath.trim();
     if (trimmed.isEmpty) {
@@ -552,6 +806,14 @@ class HttpRemoteStateClient implements RemoteStateClient {
 
   static String? _normalizeAuthToken(String? authToken) {
     final normalized = authToken?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return null;
+    }
+    return normalized;
+  }
+
+  static String? _normalizeApiVersion(String? apiVersion) {
+    final normalized = apiVersion?.trim();
     if (normalized == null || normalized.isEmpty) {
       return null;
     }
@@ -573,7 +835,8 @@ class RemoteRetryPolicy {
   int get maxAttempts => retryDelays.length + 1;
 }
 
-class SimulatedRemoteStateClient implements RemoteStateClient {
+class SimulatedRemoteStateClient
+    implements RemoteStateClient, RemoteSessionAwareClient {
   SimulatedRemoteStateClient({
     PersistedAppState? initialState,
     this.networkDelay = const Duration(milliseconds: 320),
@@ -583,6 +846,8 @@ class SimulatedRemoteStateClient implements RemoteStateClient {
        _random = random ?? math.Random();
 
   PersistedAppState _state;
+  @override
+  RemoteSession? session;
   final Duration networkDelay;
   final double failureRate;
   final math.Random _random;
@@ -620,15 +885,18 @@ class RemoteAppRepository implements AppRepository {
   RemoteAppRepository({
     required RemoteStateClient remoteClient,
     AppStateStore? stateStore,
+    RemoteSessionStore remoteSessionStore = const NoopRemoteSessionStore(),
     RemoteRetryPolicy retryPolicy = const RemoteRetryPolicy(),
     Future<void> Function(Duration delay)? waitForDelay,
   }) : _remoteClient = remoteClient,
        _stateStore = stateStore ?? const AppStateStore(),
+       _remoteSessionStore = remoteSessionStore,
        _retryPolicy = retryPolicy,
        _waitForDelay = waitForDelay ?? _defaultWaitForDelay;
 
   final RemoteStateClient _remoteClient;
   final AppStateStore _stateStore;
+  final RemoteSessionStore _remoteSessionStore;
   final RemoteRetryPolicy _retryPolicy;
   final Future<void> Function(Duration delay) _waitForDelay;
   final Map<String, String> _credentials = <String, String>{};
@@ -653,12 +921,14 @@ class RemoteAppRepository implements AppRepository {
     final local = await _stateStore.load();
     _applyPersistedState(local);
     _normalizeInMemoryState();
+    await _restoreRemoteSession();
 
     try {
       final remote = await _withRemoteRetries(() => _remoteClient.load());
       _applyPersistedState(remote);
       _normalizeInMemoryState();
       await _persistLocalSafely();
+      await _persistRemoteSession();
     } on RemoteStateUnauthorized {
       await _expireActiveSession();
     } catch (_) {
@@ -723,7 +993,9 @@ class RemoteAppRepository implements AppRepository {
   @override
   void logout() {
     _activeEmail = null;
+    _sessionAwareClient?.session = null;
     unawaited(_commitStateSafely());
+    unawaited(_clearRemoteSessionStore());
   }
 
   @override
@@ -932,6 +1204,7 @@ class RemoteAppRepository implements AppRepository {
     try {
       await _withRemoteRetries(() => _remoteClient.save(next));
       await _stateStore.save(next);
+      await _persistRemoteSession();
       return _RemoteCommitStatus.synced;
     } on RemoteStateUnauthorized {
       return _RemoteCommitStatus.unauthorized;
@@ -942,7 +1215,51 @@ class RemoteAppRepository implements AppRepository {
 
   Future<void> _expireActiveSession() async {
     _activeEmail = null;
+    _sessionAwareClient?.session = null;
     await _persistLocalSafely();
+    await _clearRemoteSessionStore();
+  }
+
+  RemoteSessionAwareClient? get _sessionAwareClient {
+    final client = _remoteClient;
+    if (client is RemoteSessionAwareClient) {
+      return client as RemoteSessionAwareClient;
+    }
+    return null;
+  }
+
+  Future<void> _restoreRemoteSession() async {
+    final client = _sessionAwareClient;
+    if (client == null) {
+      return;
+    }
+
+    final restored = await _remoteSessionStore.load();
+    if (restored == null || restored.isExpired()) {
+      client.session = null;
+      await _clearRemoteSessionStore();
+      return;
+    }
+    client.session = restored;
+  }
+
+  Future<void> _persistRemoteSession() async {
+    final client = _sessionAwareClient;
+    if (client == null) {
+      return;
+    }
+
+    final current = client.session;
+    if (current == null || current.isExpired()) {
+      client.session = null;
+      await _clearRemoteSessionStore();
+      return;
+    }
+    await _remoteSessionStore.save(current);
+  }
+
+  Future<void> _clearRemoteSessionStore() async {
+    await _remoteSessionStore.save(null);
   }
 
   Future<T> _withRemoteRetries<T>(Future<T> Function() operation) async {

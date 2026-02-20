@@ -16,6 +16,22 @@ class _InMemoryAppStateStore extends AppStateStore {
   }
 }
 
+class _InMemoryRemoteSessionStore implements RemoteSessionStore {
+  _InMemoryRemoteSessionStore({this.session});
+
+  RemoteSession? session;
+  int saveCalls = 0;
+
+  @override
+  Future<RemoteSession?> load() async => session;
+
+  @override
+  Future<void> save(RemoteSession? session) async {
+    saveCalls += 1;
+    this.session = session;
+  }
+}
+
 class _FlakyRemoteStateClient implements RemoteStateClient {
   _FlakyRemoteStateClient({
     PersistedAppState? initialState,
@@ -47,6 +63,27 @@ class _FlakyRemoteStateClient implements RemoteStateClient {
       throw const RemoteStateUnavailable();
     }
     _state = PersistedAppState.fromJson(state.toJson());
+  }
+}
+
+class _SessionRotatingRemoteStateClient
+    implements RemoteStateClient, RemoteSessionAwareClient {
+  _SessionRotatingRemoteStateClient({PersistedAppState? initialState})
+    : _state = initialState ?? const PersistedAppState.empty();
+
+  PersistedAppState _state;
+  @override
+  RemoteSession? session;
+
+  @override
+  Future<PersistedAppState> load() async {
+    return PersistedAppState.fromJson(_state.toJson());
+  }
+
+  @override
+  Future<void> save(PersistedAppState state) async {
+    _state = PersistedAppState.fromJson(state.toJson());
+    session = const RemoteSession(accessToken: 'rotated-session-token');
   }
 }
 
@@ -544,6 +581,90 @@ void main() {
       expect(repository.activeUser?.flights.length, equals(1));
     });
 
+    test('hydrate restores a non-expired persisted remote session', () async {
+      final remoteClient = SimulatedRemoteStateClient(
+        networkDelay: Duration.zero,
+      );
+      final sessionStore = _InMemoryRemoteSessionStore(
+        session: RemoteSession(
+          accessToken: 'persisted-session-token',
+          expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+        ),
+      );
+      final repository = RemoteAppRepository(
+        remoteClient: remoteClient,
+        stateStore: _InMemoryAppStateStore(),
+        remoteSessionStore: sessionStore,
+      );
+
+      await repository.hydrate();
+
+      expect(
+        remoteClient.session?.accessToken,
+        equals('persisted-session-token'),
+      );
+      expect(
+        sessionStore.session?.accessToken,
+        equals('persisted-session-token'),
+      );
+    });
+
+    test('hydrate clears expired persisted remote session', () async {
+      final remoteClient = SimulatedRemoteStateClient(
+        networkDelay: Duration.zero,
+      );
+      final sessionStore = _InMemoryRemoteSessionStore(
+        session: RemoteSession(
+          accessToken: 'expired-session-token',
+          expiresAt: DateTime.now().toUtc().subtract(
+            const Duration(seconds: 1),
+          ),
+        ),
+      );
+      final repository = RemoteAppRepository(
+        remoteClient: remoteClient,
+        stateStore: _InMemoryAppStateStore(),
+        remoteSessionStore: sessionStore,
+      );
+
+      await repository.hydrate();
+
+      expect(remoteClient.session, isNull);
+      expect(sessionStore.session, isNull);
+      expect(sessionStore.saveCalls, greaterThan(0));
+    });
+
+    test(
+      'persists rotated session token after successful remote commit',
+      () async {
+        final remoteClient = _SessionRotatingRemoteStateClient();
+        final sessionStore = _InMemoryRemoteSessionStore(
+          session: RemoteSession(accessToken: 'restored-session-token'),
+        );
+        final repository = RemoteAppRepository(
+          remoteClient: remoteClient,
+          stateStore: _InMemoryAppStateStore(),
+          remoteSessionStore: sessionStore,
+        );
+
+        await repository.hydrate();
+        final auth = await repository.register(
+          'remote-session-rotate@example.com',
+          'secure123',
+        );
+
+        expect(auth.status, equals(AuthActionStatus.authenticated));
+        expect(
+          remoteClient.session?.accessToken,
+          equals('rotated-session-token'),
+        );
+        expect(
+          sessionStore.session?.accessToken,
+          equals('rotated-session-token'),
+        );
+      },
+    );
+
     test('returns unavailable and rolls back on remote outage', () async {
       final remoteClient = SimulatedRemoteStateClient(
         networkDelay: Duration.zero,
@@ -657,9 +778,13 @@ void main() {
           initialState: stateStore.state,
           failOnLoad: true,
         );
+        final sessionStore = _InMemoryRemoteSessionStore(
+          session: RemoteSession(accessToken: 'session-token'),
+        );
         final repository = RemoteAppRepository(
           remoteClient: remoteClient,
           stateStore: stateStore,
+          remoteSessionStore: sessionStore,
         );
 
         await repository.hydrate();
@@ -674,6 +799,7 @@ void main() {
           isTrue,
         );
         expect(stateStore.state.activeEmail, isNull);
+        expect(sessionStore.session, isNull);
       },
     );
 
